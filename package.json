@@ -1,0 +1,33 @@
+{
+  "name": "ui-smoke",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright UI smoke tests for PI, PPP, CMBC, Fleet and MTP",
+  "scripts": {
+    "smoke": "node scripts/run-smoke.mjs",
+    "smoke:select": "node scripts/run-smoke.mjs --interactive",
+    "smoke:seq": "node scripts/run-smoke.mjs --mode sequential",
+    "smoke:par": "node scripts/run-smoke.mjs --mode parallel",
+    "smoke:pi": "node scripts/run-smoke.mjs --products pi",
+    "smoke:ppp": "node scripts/run-smoke.mjs --products ppp",
+    "smoke:cmbc": "node scripts/run-smoke.mjs --products cmbc",
+    "smoke:fleet": "node scripts/run-smoke.mjs --products fleet",
+    "smoke:mtp": "node scripts/run-smoke.mjs --products mtp",
+    "smoke:headed": "node scripts/run-smoke.mjs --headed --workers=1",
+    "smoke:list": "node scripts/run-smoke.mjs --list",
+    "auth": "node scripts/run-smoke.mjs --auth-only",
+    "smoke:raw": "playwright test",
+    "login": "cross-env MANUAL_LOGIN=1 playwright test --workers=1",
+    "login:cdp": "node scripts/login-cdp.mjs",
+    "report": "playwright show-report",
+    "codegen": "playwright codegen",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^22.0.0",
+    "cross-env": "^7.0.3",
+    "dotenv": "^16.4.5",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,360 @@
+import { Locator, Page, expect } from '@playwright/test';
+import { businessAction, clickSave, expectTitleWithReload, expectToast, referenceFromTitle, waitForIdle } from './entity';
+import { expandSectionFor, field, selectDate, selectDialogDropdown, selectDialogMulti } from './kendo';
+import { QuoteSectionsPage } from './QuoteSectionsPage';
+
+const quoteId = (quoteUrl: string) => quoteUrl.match(/\/ui\/Quote\/\w+\/(\d+)/)![1];
+
+const TASK_STATUS = /\b(Not Started|In Progress|Approved|Rejected|Completed)\b/;
+
+export type IssueOutcome = 'issued' | 'referred';
+
+export interface TaskData {
+  taskType: string;
+  reason: string;
+  /** Person the task is assigned to (Assigned To = Individual). */
+  assignee: string;
+  subject: string;
+}
+
+/** Quote workflow actions (DETAILS / HISTORY tabs and the ⋮ menu). */
+export class QuotePage {
+  constructor(private readonly page: Page) {}
+
+  async open(quoteUrl: string, tab: 'Edit' | 'History' = 'Edit'): Promise<void> {
+    await this.page.goto(`/ui/Quote/${tab}/${quoteId(quoteUrl)}`);
+    await expectTitleWithReload(this.page, /RSK\d+Q\d+/);
+  }
+
+  private get errorBanner(): Locator {
+    // "1 Error(s) have been discovered" is split across elements, so match the label alone
+    return this.page.getByText('Error(s)');
+  }
+
+  private get warningBanner(): Locator {
+    return this.page.getByText('Warning(s)');
+  }
+
+  /** Confirms the "Move workflow to next stage" dialog (shown by Issue Quote). */
+  private async confirmMoveToNextStage(): Promise<void> {
+    const dialog = this.page.getByRole('dialog').filter({ hasText: 'Move workflow to next stage' });
+    await dialog.getByRole('button', { name: 'Ok', exact: true }).click();
+  }
+
+  /** After a reload, DETAILS → Commission lists a "Broker Commission" deduction (proves it was saved). */
+  async expectBrokerCommission(): Promise<void> {
+    const { page } = this;
+    await page.reload();
+    const section = page.getByRole('button', { name: 'Commission', exact: true });
+    await section.scrollIntoViewIfNeeded();
+    const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
+    if (!(await grid.isVisible())) await section.click();
+    await expect(grid.locator('.ag-cell[col-id="DeductionTypeId"]', { hasText: 'Broker Commission' })).toBeVisible({
+      timeout: 30_000,
+    });
+  }
+
+  /**
+   * PI isn't eligible for ⋮ → Get Commission, so the Broker Commission deduction is added by hand:
+   * DETAILS → Commission → "+" → Deduction Type "Broker Commission" and Selected % → Save.
+   */
+  async addBrokerCommission(percent: string): Promise<void> {
+    const { page } = this;
+    const section = page.getByRole('button', { name: 'Commission', exact: true });
+    await section.scrollIntoViewIfNeeded();
+    const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
+    if (!(await grid.isVisible())) await section.click();
+    await expect(grid).toBeVisible();
+
+    const rows = grid.locator('.ag-center-cols-container .ag-row');
+    const before = await rows.count();
+    await page.locator('button[title="Add Commission"]').click();
+    await expect(rows).toHaveCount(before + 1);
+    const row = rows.nth(before);
+
+    const type = row.locator('.ag-cell[col-id="DeductionTypeId"]');
+    await type.dblclick();
+    await page.getByRole('option').filter({ hasText: 'Broker Commission' }).first().click();
+    await page.keyboard.press('Tab'); // commits the editor
+    await expect(type).toHaveText('Broker Commission');
+
+    const rate = row.locator('.ag-cell[col-id="RatePercentage"]');
+    // The editor occasionally doesn't open on the first double-click, so retry until the value sticks
+    await expect(async () => {
+      // The new row sits at the very bottom of the scrolling panel, so bring the cell fully into view first
+      await rate.scrollIntoViewIfNeeded();
+      await page.mouse.wheel(0, 250);
+      await rate.dblclick();
+      await page.keyboard.press('Control+A');
+      await page.keyboard.type(percent);
+      await page.keyboard.press('Enter');
+      await expect(rate).toContainText(percent, { timeout: 4_000 });
+    }).toPass({ timeout: 30_000 });
+
+    // The Details tab shows no "Quote Saved" toast, so wait for the save call itself
+    const saved = page.waitForResponse((r) => /api\/quote\/UpdateQuote/i.test(r.url()), { timeout: 60_000 });
+    await clickSave(page);
+    expect((await saved).ok(), 'UpdateQuote succeeded').toBeTruthy();
+    // A "…may impact the premium, please press Get Price" banner is expected now; pricing follows in the next step.
+  }
+
+  /**
+   * CMBC: ⋮ → Get Commission → "Confirm Commission Updates" → Accept.
+   * Sections the connector can't rate (e.g. error 90063 for agencies on the manual look-up table) are listed
+   * in the dialog and left unchanged; returns those section names.
+   */
+  async getCommission(): Promise<string[]> {
+    const { page } = this;
+    const response = page.waitForResponse(
+      (r) => /CommissionConnector\/GetCommissionRates/i.test(r.url()) && r.request().method() === 'POST',
+      { timeout: 120_000 },
+    );
+    await businessAction(page, 'Get Commission');
+    expect((await response).ok(), 'GetCommissionRates succeeded').toBeTruthy();
+
+    const dialog = page.getByRole('dialog').filter({ hasText: 'Confirm Commission Updates' }).first();
+    await expect(dialog).toBeVisible({ timeout: 60_000 });
+    await waitForIdle(page);
+    await expect(dialog.locator('.ag-row').first()).toBeVisible({ timeout: 30_000 }).catch(() => {});
+    const rejected = (await dialog.locator('.ag-row').allInnerTexts())
+      .map((t) => t.replace(/^Contract\s*/, '').trim())
+      .filter(Boolean);
+    // The dialog re-renders while its grid loads; retry until the Accept click closes it
+    await expect(async () => {
+      await waitForIdle(page);
+      if (await dialog.isVisible()) await dialog.getByRole('button', { name: /^accept$/i }).click({ timeout: 10_000 });
+      await expect(dialog).toBeHidden({ timeout: 15_000 });
+    }).toPass({ timeout: 120_000 });
+    return [...new Set(rejected)];
+  }
+
+  /** ⋮ → Next Stage (Risk Details → UW Review & Process). Needs Broker Commission on the quote. */
+  async nextStage(): Promise<void> {
+    await businessAction(this.page, 'Next Stage');
+    await expectToast(this.page, 'Quote Saved', 'any', 60_000);
+    await expect(this.errorBanner, 'errors after Next Stage').toHaveCount(0);
+  }
+
+  /**
+   * ⋮ → Issue Quote → Ok. Re-prices when asked to ("…please press Get Price"). If the risk exceeds the
+   * user's licence, acknowledges the warning (which raises a Licence Referral task) and returns 'referred'.
+   */
+  async issueQuote(riskSections: string[]): Promise<IssueOutcome> {
+    const { page } = this;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await businessAction(page, 'Issue Quote');
+      await this.confirmMoveToNextStage();
+
+      const issued = page.getByText('Quote Issued', { exact: true });
+      const needsPrice = page.getByText(/please press Get Price/);
+      await expect(issued.or(needsPrice).or(this.warningBanner).first()).toBeVisible({ timeout: 180_000 }); // authority check can take a while
+
+      if (await issued.isVisible()) return 'issued';
+
+      if (await needsPrice.isVisible()) {
+        // Premium-affecting changes (e.g. commission) since the last pricing
+        await new QuoteSectionsPage(page).getPrice(riskSections);
+        continue;
+      }
+
+      // "Risk has exceeded Authority Limit. Please acknowledge the Warning to initiate an approval…"
+      await page.getByText('ACKNOWLEDGE', { exact: true }).click();
+      await this.confirmMoveToNextStage();
+      const referred = page.locator('.toast').filter({ hasText: 'Task generated successfully and sent to Approval Group' }).first();
+      // CMBC: acknowledging warnings within authority issues the quote straight away
+      await expect(referred.or(issued).first()).toBeVisible({ timeout: 120_000 });
+      return (await referred.isVisible()) ? 'referred' : 'issued';
+    }
+    throw new Error('Issue Quote still asks for Get Price after re-pricing');
+  }
+
+  /**
+   * ⋮ → Taken Up on an issued quote. The risk is saved first; if that changed the premium the app asks for
+   * "…please press Get Price", so re-price once and retry. Ends on /ui/Policy/Conversion.
+   */
+  async takeUp(riskSections: string[]): Promise<void> {
+    const { page } = this;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // "Taken Up" on a new-business quote, "Quote Taken Up" on a renewal quote
+      await page.locator('button[title="More"]').first().click();
+      await page.locator('.dropdown-menu:visible').getByText(/^\s*(Quote )?Taken Up\s*$/).first().click();
+      const needsPrice = page.getByText(/please press Get Price/);
+      const openTasks = page.getByRole('dialog').filter({ hasText: 'open tasks to be completed' });
+      await expect(async () => {
+        // "There are open tasks to be completed, do you want to continue?" when other tasks are still open
+        if (await openTasks.isVisible()) await openTasks.getByRole('button', { name: 'Ok', exact: true }).click();
+        const converting = /\/ui\/Policy\/Conversion/.test(page.url());
+        expect(converting || (await needsPrice.isVisible())).toBeTruthy();
+      }).toPass({ timeout: 90_000, intervals: [1_000] });
+
+      if (/\/ui\/Policy\/Conversion/.test(page.url())) return;
+      await new QuoteSectionsPage(page).getPrice(riskSections);
+    }
+    throw new Error('Taken Up still asks for Get Price after re-pricing');
+  }
+
+  /**
+   * ⋮ → Model on an issued quote opens an unsaved copy in a new tab (sections, activities, income and the broker
+   * commission come along); Save there creates a brand-new quote with its own risk number. Returns it, tab closed.
+   */
+  async modelCopy(sourceQuoteUrl: string): Promise<{ reference: string; url: string }> {
+    const { page } = this;
+    await this.open(sourceQuoteUrl);
+    const [copy] = await Promise.all([page.context().waitForEvent('page', { timeout: 90_000 }), businessAction(page, 'Model')]);
+    await copy.waitForLoadState('networkidle').catch(() => {});
+    await expect(copy.locator('button[title="Save"]').first()).toBeVisible({ timeout: 60_000 });
+    await copy.locator('button[title="Save"]').first().click();
+    await copy.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 120_000 });
+    const reference = await referenceFromTitle(copy, /RSK\d+Q\d+/);
+    const url = copy.url();
+    await copy.close();
+    return { reference, url };
+  }
+
+  /**
+   * Take-up validates the mandatory "Quote Expiry Date" (Submission Information), which is empty on a renewal's
+   * endorsement quote. Fills it (today + `daysAhead`) and saves when it is empty; does nothing (returns false) when it already has a value; returns true after saving a new one.
+   */
+  async ensureQuoteExpiryDate(daysAhead = 30): Promise<boolean> {
+    const { page } = this;
+    await expandSectionFor(page, 'Submission Information', 'Quote Expiry Date');
+    if ((await field(page, 'Quote Expiry Date').inputValue()).trim()) return false;
+    const expiry = new Date();
+    expiry.setDate(expiry.getDate() + daysAhead);
+    await selectDate(page, 'Quote Expiry Date', expiry);
+    const saved = page.waitForResponse((r) => /api\/quote\/UpdateQuote/i.test(r.url()), { timeout: 60_000 });
+    await clickSave(page);
+    expect((await saved).ok(), 'UpdateQuote succeeded').toBeTruthy();
+    return true; // the premium is now flagged as possibly changed: re-price before taking up
+  }
+
+  /** HISTORY sub-tabs: Timeline | Links | Tasks | Licence (labels are upper-cased by CSS only). */
+  async openHistoryTab(quoteUrl: string, tab: 'Timeline' | 'Links' | 'Tasks' | 'Licence'): Promise<void> {
+    await this.open(quoteUrl, 'History');
+    await this.page.getByRole('button', { name: tab, exact: true }).click();
+  }
+
+  /**
+   * HISTORY → TASKS: status of a task card, e.g. "Licence Referral" → "Not Started" | "Approved".
+   * The task list loads after the tab renders, so this waits for the card to show a status.
+   */
+  async taskStatus(quoteUrl: string, taskName: string, subject?: string): Promise<string> {
+    await this.openHistoryTab(quoteUrl, 'Tasks');
+    // Anchor on the task card's own text block; a looser match can hit Timeline entries that mention the task
+    let card = this.page.locator('div.task-details-data').filter({ hasText: taskName });
+    if (subject) card = card.filter({ hasText: subject });
+    // A Model copy carries the template's old tasks, so the task this run just created is the newest (last) match.
+    // The list can stay empty on a slow environment: reopen the tab if no card shows up
+    let attempt = 0;
+    await expect(async () => {
+      if (attempt++ > 0) await this.openHistoryTab(quoteUrl, 'Tasks');
+      await expect(card.last()).toBeVisible({ timeout: 25_000 });
+    }).toPass({ timeout: 150_000 });
+    const text = await card.last().locator('.task-status .status').innerText();
+    return text.match(TASK_STATUS)?.[1] ?? text.trim();
+  }
+
+  /** ⋮ → Create Task → fill the required fields → Assign. */
+  async createTask(task: TaskData): Promise<void> {
+    const { page } = this;
+    await businessAction(page, 'Create Task');
+    const dialog = page.getByRole('dialog').filter({ hasText: 'Create Task for' });
+    await expect(dialog).toBeVisible();
+    await selectDialogDropdown(page, dialog, 'Task Type', task.taskType); // also defaults the due date
+    await selectDialogMulti(page, dialog, 'Reason(s)', task.reason);
+    await selectDialogDropdown(page, dialog, 'Enter Name', task.assignee);
+    await dialog.getByPlaceholder('Enter Text Here').first().fill(task.subject);
+    await dialog.getByRole('button', { name: 'Assign', exact: true }).click();
+    await expectToast(page, 'Task Created Successfully', 'any', 60_000);
+  }
+
+  /** ⋮ → Declined / Not Taken Up (same dialog shape, different reason list) → confirm. */
+  async closeQuote(action: 'Declined' | 'Not Taken Up', reason: string, description: string): Promise<void> {
+    const { page } = this;
+    await businessAction(page, action);
+    const dialog = page.getByRole('dialog').filter({ hasText: /Mark As (Declined|Not Taken Up)/ });
+    await expect(dialog).toBeVisible();
+    await selectDialogDropdown(page, dialog, action === 'Declined' ? 'Decline Reason' : 'Not Taken Up Reason', reason);
+    await dialog.getByPlaceholder('Enter Text Here').last().fill(description);
+    await dialog.getByRole('button', { name: action === 'Declined' ? 'Decline' : 'Not Taken Up', exact: true }).click();
+  }
+
+  /**
+   * HISTORY → TASKS → task card ⋮ → Forward → "Assign to Other" (Individual) → Assign.
+   * Used to hand the Licence Referral to the signed-in user so it can be approved there (see approveTask).
+   */
+  async forwardTask(quoteUrl: string, taskName: string, assignee: string): Promise<void> {
+    const { page } = this;
+    await this.openHistoryTab(quoteUrl, 'Tasks');
+    // Each task is an <li>: its text, then a .status-action-container with the ⋮ trigger and the (hidden) menu items
+    const text = page.locator('div.task-details-data').filter({ hasText: taskName }).last(); // newest: copies carry old tasks
+    await expect(text).toBeVisible({ timeout: 60_000 });
+    const card = text.locator('xpath=ancestor::li[1]');
+    await card.locator('.status-action-container a.dropdown-toggle').click();
+    // The <app-anchor-tag> wrapper sits over its <button> and takes the click
+    await card.locator('app-anchor-tag#Task_Action').filter({ hasText: 'Forward' }).click();
+
+    const dialog = page.getByRole('dialog').filter({ hasText: 'Assign to Other' });
+    await expect(dialog).toBeVisible();
+    const person = dialog.getByRole('combobox');
+    await person.click();
+    await person.pressSequentially(assignee, { delay: 40 });
+    await page.getByRole('option').filter({ hasText: new RegExp(`^\\s*${assignee}`) }).first().click();
+    await dialog.getByRole('button', { name: 'Assign', exact: true }).click();
+    await expect(dialog).toBeHidden({ timeout: 30_000 });
+  }
+
+  /**
+   * HISTORY → TASKS → task card ⋮ → Approve (or Complete, for tasks that offer that instead).
+   * Works once the task is assigned to the signed-in user (see forwardTask). Confirms any dialog that follows.
+   */
+  async approveTask(quoteUrl: string, taskName: string, only?: 'Approve' | 'Complete', subject?: string): Promise<void> {
+    const { page } = this;
+    await this.openHistoryTab(quoteUrl, 'Tasks');
+    let texts = page.locator('div.task-details-data').filter({ hasText: taskName });
+    if (subject) texts = texts.filter({ hasText: subject });
+    const text = texts.last(); // newest: copies carry old tasks
+    await expect(text).toBeVisible({ timeout: 60_000 });
+    const card = text.locator('xpath=ancestor::li[1]');
+    await card.locator('.status-action-container a.dropdown-toggle').click();
+    // Prefer Approve; "Complete" would close the task without approving it
+    const items = card.locator('app-anchor-tag#Task_Action');
+    const approve = items.filter({ hasText: /^\s*Approve\s*$/ });
+    const complete = items.filter({ hasText: /^\s*Complete\s*$/ });
+    if (only !== 'Complete' && (await approve.count())) await approve.first().click();
+    else if (only !== 'Approve' && (await complete.count())) await complete.first().click();
+    else throw new Error(`No Approve/Complete in the "${taskName}" task menu: ${(await items.allInnerTexts()).map((t) => t.trim()).join(' | ')}`);
+
+    // Some actions ask for confirmation / comments first
+    const dialog = page.getByRole('dialog').first();
+    if (await dialog.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await dialog.getByRole('button', { name: /^(Ok|Yes|Approve|Complete|Confirm|Submit)$/i }).first().click();
+    }
+  }
+
+  /**
+   * After the quote is issued the record is view-only while documents are generated
+   * ("…document generation is currently in progress…"). Reloads until that notice is gone.
+   */
+  async waitForDocumentGeneration(quoteUrl: string, timeoutMs = 5 * 60_000): Promise<void> {
+    await expect(async () => {
+      await this.open(quoteUrl);
+      await expect(this.page.getByText('Quote Issued', { exact: true })).toBeVisible({ timeout: 20_000 });
+      await expect(this.page.getByText(/view-only mode as document generation/)).toHaveCount(0);
+    }).toPass({ timeout: timeoutMs, intervals: [10_000] });
+  }
+
+  /** Reloads until the "view-only … document generation is in progress" notice is gone (any record type). */
+  async waitUntilEditable(url: string, timeoutMs = 5 * 60_000): Promise<void> {
+    await expect(async () => {
+      await this.page.goto(url);
+      await expect(this.page.locator('button[title="More"]').first()).toBeVisible({ timeout: 30_000 });
+      await this.page.waitForTimeout(3_000); // the notice appears just after load
+      await expect(this.page.getByText(/view-only mode as document generation/)).toHaveCount(0);
+    }).toPass({ timeout: timeoutMs, intervals: [10_000] });
+  }
+
+  async expectIssued(): Promise<void> {
+    await expect(this.page.getByText('Quote Issued', { exact: true })).toBeVisible();
+  }
+}
