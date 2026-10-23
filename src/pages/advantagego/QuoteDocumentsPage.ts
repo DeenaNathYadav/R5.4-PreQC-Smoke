@@ -46,8 +46,16 @@ export class QuoteDocumentsPage {
     await expect(dialog).toBeVisible();
     await selectDialogDropdown(page, dialog, 'Document Type', data.documentType);
     await dialog.getByRole('button', { name: 'Attach', exact: true }).click();
-    await expect(this.row(title)).toBeVisible({ timeout: 90_000 }); // the grid fills a few seconds after the dialog closes
-    return title;
+    // The grid fills a few seconds after the dialog closes; on a slow document service it can stay at "(0)" until refreshed
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await expect(this.row(title)).toBeVisible({ timeout: 40_000 });
+        return title;
+      } catch (e) {
+        if (attempt >= 3) throw e;
+        await this.open(this.entityUrl);
+      }
+    }
   }
 
   /** Status of every document row in the grid, e.g. ["Completed", "In Progress"]. */
@@ -71,6 +79,8 @@ export class QuoteDocumentsPage {
       await expect(this.page.locator('.ag-center-cols-container .ag-row').first()).toBeVisible({ timeout: 30_000 });
       statuses = await this.statuses();
       if (statuses.length > 0 && statuses.every((s) => /^completed$/i.test(s))) return statuses;
+      // "In Error" is final (the document service failed to generate it): waiting longer cannot help
+      if (statuses.some((s) => /error/i.test(s))) throw new Error(`Document generation failed: ${statuses.join(', ')}`);
     }
     throw new Error(`Not all documents completed after ${retries + 1} checks (${delayMs / 1000}s apart): ${statuses.join(', ')}`);
   }

@@ -1,5 +1,5 @@
 import { Page, expect } from '@playwright/test';
-import { businessAction, clickSave, expectTitleWithReload, expectToast, referenceFromTitle } from './entity';
+import { businessAction, clickSave, expectTitleWithReload, expectToast, referenceFromTitle, acknowledgeUntil, saveAcknowledgingWarnings } from './entity';
 import { expandSectionFor, field, selectDate, selectDropdown } from './kendo';
 
 export interface CreatedPolicy {
@@ -13,8 +13,9 @@ export class PolicyPage {
 
   async open(policyUrl: string): Promise<void> {
     const id = policyUrl.match(/\/ui\/Policy\/\w+\/(\d+)/)![1];
-    await this.page.goto(`/ui/Policy/Edit/${id}`);
-    await expectTitleWithReload(this.page, /RSK\d+P\d+/);
+    const url = `/ui/Policy/Edit/${id}`;
+    await this.page.goto(url);
+    await expectTitleWithReload(this.page, /RSK\d+P\d+/, { url });
   }
 
   /**
@@ -35,6 +36,9 @@ export class PolicyPage {
   async confirmCover(): Promise<void> {
     const { page } = this;
     await businessAction(page, 'Confirm Cover');
+    // A warnings banner (ACKNOWLEDGE) can hold the action back, as with the other confirm actions
+    const saved = page.locator('.toast').filter({ hasText: 'Policy Saved' }).first();
+    await acknowledgeUntil(page, () => saved.isVisible());
     await expectToast(page, 'Policy Saved', 'any', 120_000);
     await expect(page.getByText('Bound', { exact: true }).first()).toBeVisible({ timeout: 60_000 });
   }
@@ -68,8 +72,8 @@ export class PolicyPage {
    */
   async saveEndorsement(): Promise<{ reference: string; url: string }> {
     const { page } = this;
-    await clickSave(page);
-    await page.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 120_000 });
+    await saveAcknowledgingWarnings(page, async () => /\/ui\/Quote\/Edit\/\d+/.test(page.url()));
+    await page.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 30_000 });
     const reference = await referenceFromTitle(page, /RSK\d+Q\d+/);
     return { reference, url: page.url() };
   }
@@ -83,7 +87,9 @@ export class PolicyPage {
   async confirmChange(label: string): Promise<void> {
     const { page } = this;
     await businessAction(page, label);
-    await expectToast(page, /Policy Saved|Financial Posting Completed/, 'any', 120_000);
+    const saved = page.locator('.toast').filter({ hasText: /Policy Saved|Financial Posting Completed/ }).first();
+    await acknowledgeUntil(page, () => saved.isVisible());
+    await expectToast(page, /Policy Saved|Financial Posting Completed/, 'any', 30_000);
     await this.expectConfirmed();
   }
 
@@ -106,6 +112,40 @@ export class PolicyPage {
     }).toPass({ timeout, intervals: [5_000] });
   }
 
+  /**
+   * Endorsement grid → the row's ⋮ (Action column) → Reverse → "Are you sure you want to reverse this endorsement?" → Yes.
+   * `rowText` picks the endorsement row (e.g. its Reason Description).
+   */
+  async reverseEndorsement(rowText: string): Promise<void> {
+    const { page } = this;
+    await page.getByRole('button', { name: 'Endorsement', exact: true }).first().click();
+    const row = page.getByRole('row').filter({ hasText: rowText }).first();
+    await expect(row).toBeVisible({ timeout: 30_000 });
+    await row.locator('button.dropdown-toggle').click();
+    await row.locator('.dropdown-menu a', { hasText: 'Reverse' }).click();
+    const confirm = page.getByRole('dialog').filter({ hasText: /Are you sure you want to reverse this endorsement/ });
+    await expect(confirm).toBeVisible({ timeout: 30_000 });
+    await confirm.getByRole('button', { name: 'Yes', exact: true }).click();
+    await expect(confirm).toBeHidden({ timeout: 60_000 });
+  }
+
+  /**
+   * After Reverse → Yes: the header status reads "Reversed" and the reversed endorsement's grid row changes from Bound to
+   * Reversed (the original endorsement 000 stays Bound). Retries through reloads while the backend finishes.
+   */
+  async expectEndorsementReversed(rowText: string, timeout = 120_000): Promise<void> {
+    const { page } = this;
+    await expect(async () => {
+      await page.reload();
+      await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole('listitem').filter({ hasText: /\bReversed\b/ }).first()).toBeVisible({ timeout: 10_000 });
+      await page.getByRole('button', { name: 'Endorsement', exact: true }).first().click();
+      const row = page.getByRole('row').filter({ hasText: rowText }).first();
+      await expect(row).toContainText('Reversed', { timeout: 10_000 });
+      await expect(page.getByRole('row').filter({ hasText: 'Original' }).first()).toContainText('Bound');
+    }).toPass({ timeout, intervals: [5_000] });
+  }
+
   /** Header status block reads "Bound Booked" (endorsement) or "Cancelled Booked" (cancellation); the grid below has hidden duplicates. */
   async expectConfirmed(timeout = 60_000): Promise<void> {
     await expect(this.page.getByRole('listitem').filter({ hasText: /^\s*(Bound|Cancelled)\s+Booked\s*$/ }).first()).toBeVisible({ timeout });
@@ -113,15 +153,26 @@ export class PolicyPage {
 
   /**
    * ⋮ → Renew - Quote → dialog "Renewal" step 1 (risk sections, all pre-ticked) → NEXT → step 2 (schedules) → RENEW.
-   * Creates the renewal quote.
+   * Creates the renewal quote. `expectSchedules`: the product has a schedule (CMBC) - wait for its rows and tick them.
+   * PI has none, so its step 2 shows an empty grid.
    */
-  async renew(): Promise<void> {
+  async renew({ expectSchedules = false }: { expectSchedules?: boolean } = {}): Promise<void> {
     const { page } = this;
+    this.termBeforeRenewal = await this.termText().catch(() => '');
     await businessAction(page, 'Renew - Quote');
     const dialog = page.getByRole('dialog').filter({ hasText: /Select the Risk Sections for renewal/ });
     await expect(dialog).toBeVisible({ timeout: 60_000 });
     await dialog.getByRole('button', { name: 'NEXT', exact: true }).click();
-    await expect(page.getByRole('dialog').filter({ hasText: /Select schedules for renewal/ })).toBeVisible({ timeout: 60_000 });
+    const schedulesStep = page.getByRole('dialog').filter({ hasText: /Select schedules for renewal/ });
+    await expect(schedulesStep).toBeVisible({ timeout: 60_000 });
+    // The schedules grid fills in a moment after the step opens. Renewing before it has rendered, or with "Renew Schedules"
+    // unticked, gives a renewal quote with NO schedule items, so wait for the rows and make sure the column is ticked.
+    if (expectSchedules) {
+      await expect(schedulesStep.locator('.ag-row').locator('visible=true').first()).toBeVisible({ timeout: 30_000 });
+      for (const box of await schedulesStep.locator('.ag-header-select-all .ag-checkbox-input-wrapper').locator('visible=true').all()) {
+        if (!(await box.evaluate((e) => e.classList.contains('ag-checked')))) await box.click();
+      }
+    }
     await page.getByRole('dialog').getByRole('button', { name: 'RENEW', exact: true }).click();
 
     // "Risk Sections that are not available in Product Offerings for renewal dates will be removed." → Ok
@@ -139,10 +190,27 @@ export class PolicyPage {
     await page.waitForURL('**/ui/Quote/Renew', { timeout: 90_000 });
     await expect(page.locator('button[title="Save"]').first()).toBeVisible({ timeout: 60_000 });
     await page.waitForLoadState('networkidle').catch(() => {});
-    await clickSave(page);
-    await page.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 120_000 });
+    // The page opens showing the policy being renewed and swaps in the renewal quote a moment later; a Save in between
+    // saves the policy (api/policy/UpdatePolicy) instead of creating the renewal. The renewal term in the header
+    // ("Inception - Expiry Date" a year on) shows the swap has happened.
+    if (this.termBeforeRenewal) {
+      await expect
+        .poll(() => this.termText().catch(() => this.termBeforeRenewal), { timeout: 60_000, intervals: [1_000] })
+        .not.toBe(this.termBeforeRenewal)
+        .catch(() => {}); // header never changed: carry on as before rather than fail on an assumption about the screen
+    }
+    await saveAcknowledgingWarnings(page, async () => /\/ui\/Quote\/Edit\/\d+/.test(page.url()));
+    await page.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 30_000 });
     const reference = await referenceFromTitle(page, /RSK\d+Q\d+/);
     return { reference, url: page.url() };
+  }
+
+  private termBeforeRenewal = '';
+
+  /** The header's "Inception - Expiry Date" text, e.g. "19/10/2026 - 18/10/2027". */
+  private async termText(): Promise<string> {
+    const header = this.page.getByText(/\d{2}\/\d{2}\/\d{4}\s*-\s*\d{2}\/\d{2}\/\d{4}/).first();
+    return (await header.innerText({ timeout: 10_000 })).replace(/\s+/g, ' ').trim();
   }
 
   /** The policy term's start, from the header's "Inception - Expiry Date" (e.g. "17/10/2027 - 16/10/2028"). */
@@ -171,8 +239,8 @@ export class PolicyPage {
   /** Save on the cancellation page creates the cancellation MTA on the policy: the header reference becomes …P001/MTA001. */
   async saveCancellation(): Promise<void> {
     const { page } = this;
-    await clickSave(page);
-    await expect(page.getByText(/RSK\d+P\d+\/MTA\d+/).first()).toBeVisible({ timeout: 120_000 });
+    await saveAcknowledgingWarnings(page, () => page.getByText(/RSK\d+P\d+\/MTA\d+/).first().isVisible());
+    await expect(page.getByText(/RSK\d+P\d+\/MTA\d+/).first()).toBeVisible({ timeout: 30_000 });
   }
 
   /**
@@ -190,7 +258,7 @@ export class PolicyPage {
   /** Save creates the reinstatement MTA (…P001/MTA002) at /ui/Policy/Edit/<id>. */
   async saveReinstatement(): Promise<void> {
     const { page } = this;
-    await clickSave(page);
-    await expect(page.getByText(/RSK\d+P\d+\/MTA\d+/).first()).toBeVisible({ timeout: 120_000 });
+    await saveAcknowledgingWarnings(page, () => page.getByText(/RSK\d+P\d+\/MTA\d+/).first().isVisible());
+    await expect(page.getByText(/RSK\d+P\d+\/MTA\d+/).first()).toBeVisible({ timeout: 30_000 });
   }
 }

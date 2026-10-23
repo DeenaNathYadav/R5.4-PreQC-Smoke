@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test';
 import path from 'path';
 import { EditableGrid } from '../../pages/advantagego/agGrid';
+import { clickSave, expectToast, waitForIdle } from '../../pages/advantagego/entity';
 import { selectDropdown } from '../../pages/advantagego/kendo';
 import { QuoteSectionsPage, escapeRegExp } from '../../pages/advantagego/QuoteSectionsPage';
 
@@ -184,5 +185,69 @@ export class CmbcSectionsPage extends QuoteSectionsPage {
       const { scheduleCount: after } = await this.openCmbcSchedule();
       expect(after, 'schedule items after import').toBe(scheduleCount + 1);
     }).toPass({ timeout: 90_000 });
+  }
+  /**
+   * Quote → PDBI → SCHEDULE → ⋮ → "Geocode and Get Peril Score". The app starts a background job and opens the Data Import
+   * wizard in a new tab; its Pending Tasks page is worked through: Continue (geocoding complete) → Geocoding Results → Next →
+   * Continue (peril score complete) → Confirm Import → Finish. A renewal quote's copied schedule items are not geocoded, and
+   * Get Price refuses them ("The Geocoding for all schedule items have not been done"), so this runs before pricing.
+   * The newest task is always the first row, so earlier unfinished tasks are left alone.
+   */
+  async geocodeAndGetPerilScore(): Promise<void> {
+    const { page } = this;
+    const { header } = await this.openCmbcSchedule();
+    const action = header.locator('a', { hasText: 'Geocode and Get Peril Score' }).first();
+    // The action works on the selected schedule items and is greyed out until some are: tick the select-all box
+    // (or the row boxes when the grid has none)
+    // (ag-grid's checkbox is a styled wrapper around a hidden input, so the wrapper is what gets clicked)
+    const ticked = (box: import('@playwright/test').Locator) => box.evaluate((e) => e.classList.contains('ag-checked'));
+    const selectAll = page.locator('.ag-header-select-all .ag-checkbox-input-wrapper').locator('visible=true').first();
+    if (await selectAll.count()) {
+      if (!(await ticked(selectAll))) await selectAll.click();
+    } else {
+      for (const box of await page.locator('.ag-row .ag-selection-checkbox .ag-checkbox-input-wrapper').all()) {
+        if (!(await ticked(box))) await box.click();
+      }
+    }
+    // The action sits in one of the header's untitled ⋮ menus: open them in turn until it shows
+    const menus = header.locator('button:not([data-bs-title])');
+    for (let i = 0, n = await menus.count(); i < n && !(await action.isVisible()); i++) {
+      await menus.nth(i).click({ force: true }).catch(() => {});
+      await page.waitForTimeout(500);
+      if (!(await action.isVisible())) await page.keyboard.press('Escape');
+    }
+    await expect(action, 'Geocode and Get Peril Score is offered in the schedule menu').toBeVisible();
+    await expect(action, 'Geocode and Get Peril Score is enabled once schedule items are selected').not.toHaveClass(/disabled/);
+    const popupPromise = page.context().waitForEvent('page', { timeout: 30_000 });
+    await action.click();
+    const popup = await popupPromise;
+    await popup.waitForLoadState();
+
+    const newestTask = popup.locator('.data-import-list').first();
+    const continueNewest = async (status: RegExp) => {
+      await expect(newestTask).toContainText(status, { timeout: 240_000 });
+      await newestTask.getByRole('button', { name: 'Continue', exact: true }).click();
+    };
+
+    await continueNewest(/Geocoding is complete/);
+    await expect(popup.getByText('Geocoding Results', { exact: true })).toBeVisible({ timeout: 60_000 });
+    await expect(popup.getByText(/Locations Rejected\s*0\//)).toBeVisible();
+    await popup.getByRole('button', { name: 'Next', exact: true }).click();
+
+    await continueNewest(/Peril score look up is complete/);
+    await expect(popup.getByText('Confirm Import', { exact: true })).toBeVisible({ timeout: 60_000 });
+    // Finish closes the wizard at once (register the wait first) and hands the geocoded data to this tab in memory
+    const closed = popup.waitForEvent('close', { timeout: 60_000 }).then(() => true, () => false);
+    await popup.getByRole('button', { name: 'Finish', exact: true }).click();
+    await closed;
+
+    // Give the data a few seconds to land on the schedule, then Save writes it to the database ("Schedule Saved Successfully").
+    // Reload afterwards: the quote's ⋮ menu is not offered on this tab until the page is refreshed.
+    await waitForIdle(page);
+    await page.waitForTimeout(8_000);
+    await clickSave(page);
+    await expectToast(page, /Schedule Saved Successfully/, 'any', 60_000);
+    await page.reload();
+    await expect(page.getByText('Risk Sections', { exact: true })).toBeVisible({ timeout: 60_000 });
   }
 }

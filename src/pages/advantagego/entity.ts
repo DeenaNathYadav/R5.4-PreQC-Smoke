@@ -12,6 +12,31 @@ export async function clickSave(page: Page): Promise<void> {
   await page.locator('button[title="Save"]').first().click();
 }
 
+/**
+ * Waits until `done()` holds, clicking ACKNOWLEDGE whenever the warnings banner offers it. Some actions (a CMBC General
+ * Endorsement save with its CVOT reminder, Confirm Cancellation …) come back with the banner instead of completing; its
+ * ACKNOWLEDGE link makes the app carry the action out. Returns quietly on timeout so the caller's own check reports what is missing.
+ */
+export async function acknowledgeUntil(page: Page, done: () => Promise<boolean>, timeout = 120_000): Promise<void> {
+  const acknowledge = page.getByText('ACKNOWLEDGE', { exact: true });
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await done().catch(() => false)) return;
+    if (await acknowledge.first().isVisible().catch(() => false)) {
+      await acknowledge.first().click().catch(() => {});
+      await page.waitForTimeout(3_000);
+      continue;
+    }
+    await page.waitForTimeout(1_000);
+  }
+}
+
+/** Save, then wait until `done()` holds (acknowledging a warnings banner on the way, see acknowledgeUntil). */
+export async function saveAcknowledgingWarnings(page: Page, done: () => Promise<boolean>, timeout = 120_000): Promise<void> {
+  await clickSave(page);
+  await acknowledgeUntil(page, done, timeout);
+}
+
 /** Runs an action from the ⋮ "More" menu, e.g. "Convert to Quote". */
 export async function businessAction(page: Page, action: string): Promise<void> {
   await waitForIdle(page);
@@ -22,6 +47,22 @@ export async function businessAction(page: Page, action: string): Promise<void> 
   await inMenu.first().waitFor({ timeout: 5_000 }).catch(() => {});
   if (await inMenu.count()) await inMenu.first().click();
   else await page.getByText(action, { exact: true }).click();
+}
+
+/**
+ * Opens an entity URL and waits for its ⋮ menu. On this slow host a page sometimes renders blank (no ⋮ for a minute or more),
+ * so the link is opened again a couple of times before giving up.
+ */
+export async function gotoWithMenu(page: Page, url: string, attempts = 3): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    await page.goto(url);
+    try {
+      await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 40_000 });
+      return;
+    } catch (e) {
+      if (attempt >= attempts) throw e;
+    }
+  }
 }
 
 /** Every entry in the ⋮ "More" menu for the entity's current stage (some may be greyed out). */
@@ -54,15 +95,22 @@ export async function expectToast(
 /**
  * Waits for the page title to match. On a slow environment a page sometimes stays blank (title just "Underwriting"),
  * so reload and look again a couple of times before giving up.
+ * Pass `url` when the page was opened by a deep link: the app sometimes bounces a deep link to the Dashboard, and
+ * reloading would then just reload the Dashboard, so the link is opened again instead.
  */
-export async function expectTitleWithReload(page: Page, pattern: RegExp, attempts = 3): Promise<void> {
+export async function expectTitleWithReload(
+  page: Page,
+  pattern: RegExp,
+  { attempts = 3, url }: { attempts?: number; url?: string } = {},
+): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
       await expect(page).toHaveTitle(pattern, { timeout: 25_000 });
       return;
     } catch (e) {
       if (attempt >= attempts) throw e;
-      await page.reload();
+      if (url) await page.goto(url);
+      else await page.reload();
     }
   }
 }

@@ -111,21 +111,48 @@ export class QuoteSectionsPage {
     await expect(this.page.locator('text=/Error\\(s\\) have been discovered/')).toBeVisible({ timeout: 30_000 });
   }
 
+  /** The "Select the Risk Sections to Get Price" dialog. */
+  get priceDialog() {
+    return this.page.getByRole('dialog').filter({ hasText: 'Select the Risk Sections to Get Price' });
+  }
+
   /**
    * ⋮ → Get Price → dialog (risk sections ticked) → Get Price.
    * Passes when the success toast "Price is returned back from the rating engine" appears.
+   * Returns false (only with `dialogOptional`) when the app priced without showing the section dialog.
    */
-  async getPrice(riskSections: string[]): Promise<void> {
+  async getPrice(riskSections: string[], { dialogOptional = false } = {}): Promise<boolean> {
     const { page } = this;
     await businessAction(page, 'Get Price');
-    const dialog = page.getByRole('dialog').filter({ hasText: 'Select the Risk Sections to Get Price' });
+    const acknowledge = page.getByText('ACKNOWLEDGE', { exact: true }).first();
+    const wait = dialogOptional ? 15_000 : 60_000;
+    // The save that runs before pricing can come back with a warnings banner (e.g. "ICOW Net Minimum Premium has been
+    // breached"); the section dialog only opens once it is acknowledged.
+    const answered = await this.priceDialog.or(acknowledge).first().waitFor({ timeout: wait }).then(() => true, () => false);
+    if (answered && !(await this.priceDialog.isVisible())) await acknowledge.click();
+    const shown = await this.priceDialog.waitFor({ timeout: wait }).then(() => true, () => false);
+    // When Issue Quote / Taken Up ask for a re-price ("…please press Get Price") the app can also price straight away
+    // without the dialog; the caller carries on from the page as it is.
+    if (!shown && dialogOptional) {
+      await waitForIdle(page);
+      return false;
+    }
+    await this.confirmPriceDialog(riskSections);
+    return true;
+  }
+
+  /** With the Get Price dialog open: sections listed and ticked → Get Price → wait for the rating engine. */
+  async confirmPriceDialog(riskSections: string[]): Promise<void> {
+    const { page } = this;
+    const dialog = this.priceDialog;
     // Checkboxes aren't linked to their labels, so check the section names are listed and all boxes ticked.
-    for (const s of riskSections) await expect(dialog.getByText(s, { exact: true })).toBeVisible();
+    for (const s of riskSections) await expect(dialog.getByText(new RegExp(`^\\s*${escapeRegExp(s)}\\s*$`, 'i')).first()).toBeVisible();
     for (const box of await dialog.locator('input[type=checkbox]').all()) await expect(box).toBeChecked();
 
     const priced = page.waitForResponse((r) => /api\/quote\/GetPrice/i.test(r.url()), { timeout: 120_000 });
     await dialog.getByRole('button', { name: 'Get Price', exact: true }).click();
-    await expectToast(page, 'Price is returned back from the rating engine', 'success');
+    // Matched on text alone: the toast's colour class varies (an MTA once showed it without toast-success)
+    await expectToast(page, 'Price is returned back from the rating engine', 'any');
     expect((await priced).ok(), 'GetPrice API succeeded').toBeTruthy();
   }
 }

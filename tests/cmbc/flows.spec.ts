@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { test, expect } from '../../src/fixtures';
-import { cancelPolicyMidTerm, endorsePolicy, reinstatePolicy } from '../../src/flows/endorsePolicy';
-import { createBoundPolicy, issueWithSelfApproval, takeUpAndBind } from '../../src/flows/quoteToPolicy';
+import { cancelPolicyMidTerm, endorsePolicy, reinstatePolicy } from '../../src/products/cmbc/flows/policy';
+import { createBoundPolicy, createCmbcModelCopy, issueWithSelfApproval, priceQuote, takeUpAndBind } from '../../src/products/cmbc/flows/quote';
 import { cmbc } from '../../src/products/cmbc';
 import { CmbcSectionsPage } from '../../src/products/cmbc/CmbcSectionsPage';
 import {
@@ -16,7 +16,6 @@ import {
   cmbcSubmission,
   cmbcSubmissionDetails,
 } from '../../src/products/cmbc/data';
-import { cmbcLifecycle, createCmbcModelCopy } from '../../src/products/cmbc/flows';
 import { NewSubmissionPage } from '../../src/pages/advantagego/NewSubmissionPage';
 import { PolicyPage } from '../../src/pages/advantagego/PolicyPage';
 import { QuoteDocumentsPage } from '../../src/pages/advantagego/QuoteDocumentsPage';
@@ -152,7 +151,7 @@ test.describe.serial('CMBC - Quote operations', { tag: ['@smoke', '@cmbc-flow'] 
 
   test('Issue Quote', async ({ page }) => {
     test.setTimeout(12 * 60_000);
-    await issueWithSelfApproval(page, quoteUrl, cmbcSections.riskSections[0], cmbcAssignee, { nextStageIfOffered: true });
+    await issueWithSelfApproval(page, quoteUrl, cmbcSections.riskSections[0], cmbcAssignee);
   });
 
   test('Taken up quote', async ({ page }, testInfo) => {
@@ -185,21 +184,20 @@ test.describe('CMBC - Policy operations', { tag: ['@smoke', '@cmbc-flow'] }, () 
 
   test('Renewals - Pricing', async ({ page }) => {
     test.setTimeout(20 * 60_000);
-    const basePolicy = await createBoundPolicy(page, cmbcLifecycle);
+    const basePolicy = await createBoundPolicy(page);
     const policy = new PolicyPage(page);
     await policy.open(basePolicy.url);
-    await policy.renew();
+    await policy.renew({ expectSchedules: true });
     const renewal = await policy.saveRenewal();
-    const sections = new CmbcSectionsPage(page);
-    await sections.open(renewal.url);
-    await sections.getPrice([cmbcSections.riskSections[0]]);
-    await issueWithSelfApproval(page, renewal.url, cmbcSections.riskSections[0], cmbcAssignee, { nextStageIfOffered: true });
+    await recordContract('CMBC Renewal Quote', renewal.reference, renewal.url);
+    await priceQuote(page, renewal.url, { geocodeFirst: true }); // starts at Risk Details (no Get Price there) and its schedule is not geocoded
+    await issueWithSelfApproval(page, renewal.url, cmbcSections.riskSections[0], cmbcAssignee);
     await takeUpAndBind(page, renewal.url, cmbcSections.riskSections[0], 'CMBC Renewal Policy');
   });
 
   test('MTA - Mid Term Cancellation Policy - Pricing and Reinstate Policy', async ({ page }) => {
     test.setTimeout(25 * 60_000);
-    const basePolicyUrl = cmbc.env('CANCEL_POLICY_URL') || (await createBoundPolicy(page, cmbcLifecycle)).url;
+    const basePolicyUrl = cmbc.env('CANCEL_POLICY_URL') || (await createBoundPolicy(page)).url;
     const cancellationUrl = await cancelPolicyMidTerm(
       page,
       basePolicyUrl,

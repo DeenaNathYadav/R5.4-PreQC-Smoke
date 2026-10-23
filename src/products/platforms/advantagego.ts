@@ -11,6 +11,6 @@ export const advantageGo: ProductOverrides = {
     { name: 'Create New', path: '/ui/home/createNew', title: 'Underwriting - Create New', expect: 'text=What would you like to create?' },
     { name: 'New Submission', path: '/ui/home/newSubmission', title: 'Underwriting - New Submission', expect: 'text=Entering a New Submission' },
     { name: 'Notes', path: '/ui/notes/main', title: 'Underwriting - Notes' },
-    { name: 'Documents', path: '/ui/home/documents', title: 'Underwriting - Document', expect: 'text=/Documents \(\d/' },
+    { name: 'Documents', path: '/ui/home/documents', title: 'Underwriting - Document', expect: 'text=/Documents \\(\\d/' },
   ],
 };

@@ -22,8 +22,9 @@ export class QuotePage {
   constructor(private readonly page: Page) {}
 
   async open(quoteUrl: string, tab: 'Edit' | 'History' = 'Edit'): Promise<void> {
-    await this.page.goto(`/ui/Quote/${tab}/${quoteId(quoteUrl)}`);
-    await expectTitleWithReload(this.page, /RSK\d+Q\d+/);
+    const url = `/ui/Quote/${tab}/${quoteId(quoteUrl)}`;
+    await this.page.goto(url);
+    await expectTitleWithReload(this.page, /RSK\d+Q\d+/, { url });
   }
 
   private get errorBanner(): Locator {
@@ -130,8 +131,17 @@ export class QuotePage {
 
   /** ⋮ → Next Stage (Risk Details → UW Review & Process). Needs Broker Commission on the quote. */
   async nextStage(): Promise<void> {
-    await businessAction(this.page, 'Next Stage');
-    await expectToast(this.page, 'Quote Saved', 'any', 60_000);
+    const { page } = this;
+    const saved = page.locator('.toast').filter({ hasText: 'Quote Saved' }).first();
+    // A quote that has only just been saved (a new renewal quote) can answer the first Next Stage with a bare HTTP 400 and
+    // no "Quote Saved" toast; the same call succeeds after a reload, so retry that way before giving up.
+    for (let attempt = 1; ; attempt++) {
+      await businessAction(page, 'Next Stage');
+      if (await saved.waitFor({ timeout: attempt < 3 ? 30_000 : 60_000 }).then(() => true, () => false)) break;
+      if (attempt >= 3) throw new Error('Next Stage did not report "Quote Saved" after 3 attempts');
+      await page.reload();
+      await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 60_000 });
+    }
     await expect(this.errorBanner, 'errors after Next Stage').toHaveCount(0);
   }
 
@@ -141,7 +151,7 @@ export class QuotePage {
    */
   async issueQuote(riskSections: string[]): Promise<IssueOutcome> {
     const { page } = this;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       await businessAction(page, 'Issue Quote');
       await this.confirmMoveToNextStage();
 
@@ -153,15 +163,26 @@ export class QuotePage {
 
       if (await needsPrice.isVisible()) {
         // Premium-affecting changes (e.g. commission) since the last pricing
-        await new QuoteSectionsPage(page).getPrice(riskSections);
-        continue;
+        const dialogShown = await new QuoteSectionsPage(page).getPrice(riskSections, { dialogOptional: true });
+        // Priced without the section dialog: the warnings banner that follows disables ⋮ until it is acknowledged,
+        // so carry on to the acknowledge step below instead of asking for Issue Quote again.
+        const warned = !dialogShown && (await this.warningBanner.first().waitFor({ timeout: 20_000 }).then(() => true, () => false));
+        if (!warned) continue;
       }
 
       // "Risk has exceeded Authority Limit. Please acknowledge the Warning to initiate an approval…"
       await page.getByText('ACKNOWLEDGE', { exact: true }).click();
-      await this.confirmMoveToNextStage();
+      const sections = new QuoteSectionsPage(page);
+      const moveDialog = page.getByRole('dialog').filter({ hasText: 'Move workflow to next stage' });
       const referred = page.locator('.toast').filter({ hasText: 'Task generated successfully and sent to Approval Group' }).first();
-      // CMBC: acknowledging warnings within authority issues the quote straight away
+      // What follows depends on the quote: a price may be asked for first (the Get Price dialog opens, then Issue Quote is
+      // run again), otherwise the usual "Move workflow" confirmation, or - CMBC within authority - the quote is issued straight away
+      await expect(moveDialog.or(sections.priceDialog).or(referred).or(issued).first()).toBeVisible({ timeout: 120_000 });
+      if (await sections.priceDialog.isVisible()) {
+        await sections.confirmPriceDialog(riskSections);
+        continue;
+      }
+      if (await moveDialog.isVisible()) await this.confirmMoveToNextStage();
       await expect(referred.or(issued).first()).toBeVisible({ timeout: 120_000 });
       return (await referred.isVisible()) ? 'referred' : 'issued';
     }
@@ -188,7 +209,7 @@ export class QuotePage {
       }).toPass({ timeout: 90_000, intervals: [1_000] });
 
       if (/\/ui\/Policy\/Conversion/.test(page.url())) return;
-      await new QuoteSectionsPage(page).getPrice(riskSections);
+      await new QuoteSectionsPage(page).getPrice(riskSections, { dialogOptional: true });
     }
     throw new Error('Taken Up still asks for Get Price after re-pricing');
   }
@@ -209,6 +230,45 @@ export class QuotePage {
     const url = copy.url();
     await copy.close();
     return { reference, url };
+  }
+
+  /**
+   * ⋮ → Convert to Multi Quote (offered on an issued quote) opens an unsaved copy at /ui/Quote/MultiQuote (no reference yet);
+   * Save creates the next quote of the same risk (…Q002, Provisional / In Progress) and toasts "MultiQuote created from Quote".
+   */
+  async convertToMultiQuote(sourceQuoteUrl: string): Promise<{ reference: string; url: string }> {
+    const { page } = this;
+    await this.open(sourceQuoteUrl);
+    await businessAction(page, 'Convert to Multi Quote');
+    await page.waitForURL('**/ui/Quote/MultiQuote', { timeout: 90_000 });
+    await expect(page.locator('button[title="Save"]').first()).toBeVisible({ timeout: 60_000 });
+    await waitForIdle(page);
+    await clickSave(page);
+    await page.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 120_000 });
+    await expectToast(page, /MultiQuote created from Quote/, 'any', 30_000);
+    const reference = await referenceFromTitle(page, /RSK\d+Q\d+/);
+    return { reference, url: page.url() };
+  }
+
+  /**
+   * ⋮ → Requote (enabled once the quote is Taken Up) → "open tasks to be completed, do you want to continue" → Ok opens an
+   * unsaved requote at /ui/Quote/ReQuote; Save creates the new quote version and moves to /ui/Quote/Edit/<id>.
+   */
+  async requote(sourceQuoteUrl: string): Promise<{ reference: string; url: string; toast: string }> {
+    const { page } = this;
+    await this.open(sourceQuoteUrl);
+    await businessAction(page, 'Requote');
+    const confirm = page.getByRole('dialog').filter({ hasText: /open tasks to be completed/ });
+    // Only shown while the quote still has open tasks
+    if (await confirm.waitFor({ timeout: 10_000 }).then(() => true, () => false)) await confirm.getByRole('button', { name: 'Ok', exact: true }).click();
+    await page.waitForURL('**/ui/Quote/ReQuote', { timeout: 90_000 });
+    await expect(page.locator('button[title="Save"]').first()).toBeVisible({ timeout: 60_000 });
+    await waitForIdle(page);
+    await clickSave(page);
+    await page.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 120_000 });
+    const toast = (await page.locator('.toast').first().innerText({ timeout: 10_000 }).catch(() => '')).replace(/\s+/g, ' ').trim();
+    const reference = await referenceFromTitle(page, /RSK\d+Q\d+/);
+    return { reference, url: page.url(), toast };
   }
 
   /**
@@ -329,6 +389,22 @@ export class QuotePage {
     const dialog = page.getByRole('dialog').first();
     if (await dialog.isVisible({ timeout: 5_000 }).catch(() => false)) {
       await dialog.getByRole('button', { name: /^(Ok|Yes|Approve|Complete|Confirm|Submit)$/i }).first().click();
+    }
+  }
+
+  /**
+   * Approves the newest "Licence Referral" task and waits for it to read Approved. The Approve click sometimes has no
+   * effect (the card stays "Not Started"), so it is repeated up to three times, 45 seconds apiece.
+   */
+  async approveLicenceReferral(quoteUrl: string): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      await this.approveTask(quoteUrl, 'Licence Referral');
+      const approved = await expect
+        .poll(() => this.taskStatus(quoteUrl, 'Licence Referral'), { timeout: 45_000, intervals: [5_000] })
+        .toBe('Approved')
+        .then(() => true, () => false);
+      if (approved) return;
+      if (attempt >= 3) throw new Error('Licence Referral is still not Approved after 3 approve attempts');
     }
   }
 

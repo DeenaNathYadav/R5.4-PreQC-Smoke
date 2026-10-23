@@ -2,12 +2,11 @@ import fs from 'fs';
 import type { Page } from '@playwright/test';
 import { test, expect } from '../../src/fixtures';
 import { businessAction, listActions } from '../../src/pages/advantagego/entity';
-import { cancelPolicyMidTerm, endorsePolicy, reinstatePolicy } from '../../src/flows/endorsePolicy';
-import { createBoundPolicy, issueWithSelfApproval, takeUpAndBind } from '../../src/flows/quoteToPolicy';
+import { cancelPolicyMidTerm, endorsePolicy, reinstatePolicy, reverseEndorsement } from '../../src/products/pi/flows/policy';
+import { createBoundPolicy, createPiQuote, issueWithSelfApproval, takeUpAndBind } from '../../src/products/pi/flows/quote';
 import { env } from '../../src/config/env';
 import { pi } from '../../src/products/pi';
 import { piDecline, piDocument, piEndorsement, piMidTermCancellation, piReinstatement, piQuote, piCommission, piSections, piSubmission, piSubmissionDetails, piTask } from '../../src/products/pi/data';
-import { createPiQuote, piLifecycle } from '../../src/products/pi/flows';
 import { PiSectionsPage } from '../../src/products/pi/PiSectionsPage';
 import { PolicyPage } from '../../src/pages/advantagego/PolicyPage';
 import { QuoteDocumentsPage } from '../../src/pages/advantagego/QuoteDocumentsPage';
@@ -221,11 +220,7 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
     if (issueOutcome === 'referred') {
       if (env('LICENCE_SELF_APPROVE') !== '0' && (await quote.taskStatus(quoteUrl, 'Licence Referral')) === 'Not Started') {
         await quote.forwardTask(quoteUrl, 'Licence Referral', piTask.assignee);
-        await quote.approveTask(quoteUrl, 'Licence Referral');
-        // The status takes a few seconds to change after Approve
-        await expect
-          .poll(() => quote.taskStatus(quoteUrl, 'Licence Referral'), { timeout: 120_000, intervals: [5_000] })
-          .toBe('Approved');
+        await quote.approveLicenceReferral(quoteUrl); // the status takes a few seconds to change after Approve
       }
 
       const deadline = Date.now() + waitMinutes * 60_000;
@@ -243,7 +238,23 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
     quoteIssued = true;
   });
 
-  // Taken Up / Requote / Multi-Quote need an issued quote (Licence Referral approved by a Level 2/3 underwriter).
+  // ⋮ → Convert to Multi Quote (offered on the issued quote) → Save creates the next quote of the same risk (…Q002).
+  // The source quote stays as it is, so the take-up below still works on it.
+  test('MultiQuote', async ({ page }, testInfo) => {
+    test.setTimeout(5 * 60_000);
+    test.skip(!quoteIssued && !pi.env('QUOTE_URL'), 'The quote is not issued (Issue Quote did not complete)');
+    await ensureReferences(page);
+    const multi = await new QuotePage(page).convertToMultiQuote(quoteUrl);
+    expect(multi.reference, 'a new quote of the same risk').toMatch(/^RSK\d+Q\d+$/);
+    expect(multi.reference).not.toBe(quoteReference);
+    expect(multi.reference.slice(0, 13), 'same risk as the source quote').toBe(quoteReference.slice(0, 13));
+    await expect(page.getByText('Provisional', { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+    testInfo.annotations.push({ type: 'multi quote', description: multi.reference });
+    await recordContract('Multi Quote', multi.reference, multi.url);
+    console.log(`PI multi quote: ${multi.reference} → ${multi.url}`);
+  });
+
+  // Taken Up needs an issued quote (Licence Referral approved by a Level 2/3 underwriter).
   // Taken Up → Policy Conversion → Save (policy created) → Confirm Cover (Bound). Needs the quote issued by the step above.
   test('Quote Taken up and conversion to Policy', async ({ page }, testInfo) => {
     test.setTimeout(10 * 60_000);
@@ -266,7 +277,20 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
     const statuses = await docs.expectAllDocumentsCompleted();
     console.log(`PI policy documents: ${statuses.length} completed`);
   });
-  test.fixme('MultiQuote / Requote', async () => {});
+
+  // ⋮ → Requote is enabled once the quote is Taken Up (it is greyed out at Risk Details and Quoted) → Ok → Save creates the new version.
+  test('Requote', async ({ page }, testInfo) => {
+    test.setTimeout(5 * 60_000);
+    test.skip(!policyUrl, 'The quote was not taken up (no policy)');
+    await ensureReferences(page);
+    const requote = await new QuotePage(page).requote(quoteUrl);
+    expect(requote.reference, 'a new quote version').toMatch(/^RSK\d+Q\d+$/);
+    expect(requote.reference).not.toBe(quoteReference);
+    await expect(page.getByText('Provisional', { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+    testInfo.annotations.push({ type: 'requote', description: requote.reference });
+    await recordContract('Requote', requote.reference, requote.url);
+    console.log(`PI requote: ${requote.reference} → ${requote.url} (toast: ${requote.toast})`);
+  });
 });
 
 // Own quote, so a decline can't take the chain's quote away from later steps (and an earlier failure can't skip it).
@@ -283,17 +307,26 @@ test.describe('PI - Quote lifecycle', { tag: ['@smoke', '@pi-flow'] }, () => {
 });
 
 
-test.describe('PI - Policy', { tag: ['@smoke', '@pi-flow'] }, () => {
+// Serial: the reversal undoes the endorsement made by "MTA - GE Pricing".
+test.describe.serial('PI - Policy', { tag: ['@smoke', '@pi-flow'] }, () => {
+  let endorsedPolicyUrl: string = pi.env('ENDORSED_POLICY_URL'); // lets the reversal run alone on an existing endorsed policy
+
   // Policy → General Endorsement → fill the Endorsement section → Save (creates the endorsement quote) → Get Price.
   // PI_ENDORSEMENT_URL prices an existing endorsement quote instead of starting a new one (one endorsement per policy at a time).
   test('MTA - GE Pricing', async ({ page }) => {
     test.setTimeout(15 * 60_000);
     const resume = { endorsementUrl: pi.env('ENDORSEMENT_URL'), endorsedPolicyUrl: pi.env('ENDORSED_POLICY_URL') };
     test.skip(!policyUrl && !resume.endorsementUrl && !resume.endorsedPolicyUrl, 'No bound policy (Taken Up did not run; set PI_POLICY_URL to use an existing one)');
-    await endorsePolicy(page, policyUrl, piSections.riskSection, piEndorsement, resume);
+    ({ endorsedPolicyUrl } = await endorsePolicy(page, policyUrl, piSections.riskSection, piEndorsement, resume));
   });
   test.fixme('Data Lake - Quote/Pricing/MTA/Schedule/ALS', async () => {});
-  test.fixme('MTA - Reversal', async () => {});
+
+  // Endorsement grid → ⋮ → Reverse on the Bound endorsement made above
+  test('MTA - Reversal', async ({ page }) => {
+    test.setTimeout(5 * 60_000);
+    test.skip(!endorsedPolicyUrl, 'No endorsed policy (MTA - GE Pricing did not complete)');
+    await reverseEndorsement(page, endorsedPolicyUrl, piEndorsement.reasonDescription);
+  });
 });
 
 
@@ -302,7 +335,7 @@ test.describe('PI - Policy', { tag: ['@smoke', '@pi-flow'] }, () => {
 test.describe('PI - Renewal', { tag: ['@smoke', '@pi-flow'] }, () => {
   test('Renewals - Pricing/License/Task, then endorsement on the renewal policy', async ({ page }, testInfo) => {
     test.setTimeout(20 * 60_000);
-    const template = piLifecycle.templateQuoteUrl;
+    const template = pi.env('TEMPLATE_QUOTE_URL');
     test.skip(!template && !pi.env('RENEWAL_BASE_POLICY_URL') && !pi.env('RENEWAL_POLICY_URL'), 'PI_TEMPLATE_QUOTE_URL is not set');
     // PI_RENEWAL_POLICY_URL resumes at the endorsement on an existing Bound renewal policy
     if (pi.env('RENEWAL_POLICY_URL')) {
@@ -361,7 +394,7 @@ test.describe('PI - Cancellation', { tag: ['@smoke', '@pi-flow'] }, () => {
     test.skip(!pi.env('TEMPLATE_QUOTE_URL') && !pi.env('CANCEL_POLICY_URL'), 'PI_TEMPLATE_QUOTE_URL is not set');
     let cancelPolicyUrl = pi.env('CANCEL_POLICY_URL');
     if (!cancelPolicyUrl) {
-      const policy = await createBoundPolicy(page, piLifecycle);
+      const policy = await createBoundPolicy(page);
       cancelPolicyUrl = policy.url;
       testInfo.annotations.push({ type: 'policy', description: policy.reference });
       console.log(`PI cancellation policy: ${policy.reference} → ${policy.url}`);
