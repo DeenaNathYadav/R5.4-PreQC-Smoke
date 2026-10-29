@@ -1,6 +1,17 @@
 import { Locator, Page, expect } from '@playwright/test';
-import { businessAction, clickSave, expectTitleWithReload, expectToast, referenceFromTitle, waitForIdle } from './entity';
-import { expandSectionFor, field, selectDate, selectDialogDropdown, selectDialogMulti } from './kendo';
+import {
+  acknowledgeUntil,
+  acknowledgeWarnings,
+  businessAction,
+  clickSave,
+  expectTitleWithReload,
+  expectToast,
+  referenceFromTitle,
+  reloadWithMenu,
+  saveAcknowledgingWarnings,
+  waitForIdle,
+} from './entity';
+import { expandSectionFor, field, fieldContainer, formatDate, selectDate, selectDialogDropdown, selectDialogMulti } from './kendo';
 import { QuoteSectionsPage } from './QuoteSectionsPage';
 
 const quoteId = (quoteUrl: string) => quoteUrl.match(/\/ui\/Quote\/\w+\/(\d+)/)![1];
@@ -46,7 +57,7 @@ export class QuotePage {
   async expectBrokerCommission(): Promise<void> {
     const { page } = this;
     await page.reload();
-    const section = page.getByRole('button', { name: 'Commission', exact: true });
+    const section = page.getByRole('button', { name: /^Commissions?$/ });
     await section.scrollIntoViewIfNeeded();
     const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
     if (!(await grid.isVisible())) await section.click();
@@ -56,28 +67,37 @@ export class QuotePage {
   }
 
   /**
-   * PI isn't eligible for ⋮ → Get Commission, so the Broker Commission deduction is added by hand:
-   * DETAILS → Commission → "+" → Deduction Type "Broker Commission" and Selected % → Save.
+   * PI and PPP aren't eligible for ⋮ → Get Commission, so the Broker Commission deduction is set by hand:
+   * DETAILS → Commission → the Broker Commission row's Override % (→ Save). With `requireDefaultRow` the row must already be
+   * defaulted on the quote (the test fails when it is missing); without it a missing row is added with "+".
    */
-  async addBrokerCommission(percent: string): Promise<void> {
+  async addBrokerCommission(percent: string, { requireDefaultRow = false } = {}): Promise<void> {
     const { page } = this;
-    const section = page.getByRole('button', { name: 'Commission', exact: true });
+    const section = page.getByRole('button', { name: /^Commissions?$/ });
     await section.scrollIntoViewIfNeeded();
     const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
     if (!(await grid.isVisible())) await section.click();
     await expect(grid).toBeVisible();
 
     const rows = grid.locator('.ag-center-cols-container .ag-row');
-    const before = await rows.count();
-    await page.locator('button[title="Add Commission"]').click();
-    await expect(rows).toHaveCount(before + 1);
-    const row = rows.nth(before);
+    // A product can already carry a Broker Commission row (empty Override %): update it instead of adding a second one
+    const existing = rows.filter({ has: page.locator('.ag-cell[col-id="DeductionTypeId"]', { hasText: 'Broker Commission' }) });
+    if (requireDefaultRow) expect(await existing.count(), 'a Broker Commission row is already defaulted on the quote').toBeGreaterThan(0);
+    let row;
+    if (await existing.count()) {
+      row = existing.first();
+    } else {
+      const before = await rows.count();
+      await page.locator('button[title="Add Commission"]').click();
+      await expect(rows).toHaveCount(before + 1);
+      row = rows.nth(before);
 
-    const type = row.locator('.ag-cell[col-id="DeductionTypeId"]');
-    await type.dblclick();
-    await page.getByRole('option').filter({ hasText: 'Broker Commission' }).first().click();
-    await page.keyboard.press('Tab'); // commits the editor
-    await expect(type).toHaveText('Broker Commission');
+      const type = row.locator('.ag-cell[col-id="DeductionTypeId"]');
+      await type.dblclick();
+      await page.getByRole('option').filter({ hasText: 'Broker Commission' }).first().click();
+      await page.keyboard.press('Tab'); // commits the editor
+      await expect(type).toHaveText('Broker Commission');
+    }
 
     const rate = row.locator('.ag-cell[col-id="RatePercentage"]');
     // The editor occasionally doesn't open on the first double-click, so retry until the value sticks
@@ -96,6 +116,7 @@ export class QuotePage {
     const saved = page.waitForResponse((r) => /api\/quote\/UpdateQuote/i.test(r.url()), { timeout: 60_000 });
     await clickSave(page);
     expect((await saved).ok(), 'UpdateQuote succeeded').toBeTruthy();
+    await acknowledgeWarnings(page);
     // A "…may impact the premium, please press Get Price" banner is expected now; pricing follows in the next step.
   }
 
@@ -137,10 +158,10 @@ export class QuotePage {
     // no "Quote Saved" toast; the same call succeeds after a reload, so retry that way before giving up.
     for (let attempt = 1; ; attempt++) {
       await businessAction(page, 'Next Stage');
-      if (await saved.waitFor({ timeout: attempt < 3 ? 30_000 : 60_000 }).then(() => true, () => false)) break;
+      await acknowledgeUntil(page, async () => (await saved.count()) > 0, attempt < 3 ? 30_000 : 60_000);
+      if ((await saved.count()) > 0) break;
       if (attempt >= 3) throw new Error('Next Stage did not report "Quote Saved" after 3 attempts');
-      await page.reload();
-      await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 60_000 });
+      await reloadWithMenu(page);
     }
     await expect(this.errorBanner, 'errors after Next Stage').toHaveCount(0);
   }
@@ -204,6 +225,10 @@ export class QuotePage {
       await expect(async () => {
         // "There are open tasks to be completed, do you want to continue?" when other tasks are still open
         if (await openTasks.isVisible()) await openTasks.getByRole('button', { name: 'Ok', exact: true }).click();
+        // Any warning (e.g. PPP "One or more locations does not have Survey Details") is acknowledged so the take-up goes through
+        // (the warning text stays on screen after it is acknowledged, so click only while the link is still offered)
+        const acknowledge = page.getByText('ACKNOWLEDGE', { exact: true }).first();
+        if (await acknowledge.isVisible()) await acknowledge.click({ timeout: 5_000 }).catch(() => {});
         const converting = /\/ui\/Policy\/Conversion/.test(page.url());
         expect(converting || (await needsPrice.isVisible())).toBeTruthy();
       }).toPass({ timeout: 90_000, intervals: [1_000] });
@@ -217,14 +242,26 @@ export class QuotePage {
   /**
    * ⋮ → Model on an issued quote opens an unsaved copy in a new tab (sections, activities, income and the broker
    * commission come along); Save there creates a brand-new quote with its own risk number. Returns it, tab closed.
+   * `inceptsOn` sets the copy's inception date before Save (see setQuoteInceptionDate).
    */
-  async modelCopy(sourceQuoteUrl: string): Promise<{ reference: string; url: string }> {
+  async modelCopy(sourceQuoteUrl: string, { inceptsOn }: { inceptsOn?: Date } = {}): Promise<{ reference: string; url: string }> {
     const { page } = this;
     await this.open(sourceQuoteUrl);
     const [copy] = await Promise.all([page.context().waitForEvent('page', { timeout: 90_000 }), businessAction(page, 'Model')]);
     await copy.waitForLoadState('networkidle').catch(() => {});
     await expect(copy.locator('button[title="Save"]').first()).toBeVisible({ timeout: 60_000 });
+    if (inceptsOn) await setQuoteInceptionDate(copy, inceptsOn);
     await copy.locator('button[title="Save"]').first().click();
+    // A changed inception date asks "Changing the dates at Parent level shall change the dates of their child components" on Save
+    const datesConfirm = copy.getByRole('dialog').filter({ hasText: /Changing the dates at Parent level/ });
+    await acknowledgeUntil(
+      copy,
+      async () => {
+        if (await datesConfirm.isVisible()) await datesConfirm.getByRole('button', { name: 'Confirm', exact: true }).click();
+        return /\/ui\/Quote\/Edit\/\d+/.test(copy.url());
+      },
+      120_000,
+    );
     await copy.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 120_000 });
     const reference = await referenceFromTitle(copy, /RSK\d+Q\d+/);
     const url = copy.url();
@@ -243,7 +280,7 @@ export class QuotePage {
     await page.waitForURL('**/ui/Quote/MultiQuote', { timeout: 90_000 });
     await expect(page.locator('button[title="Save"]').first()).toBeVisible({ timeout: 60_000 });
     await waitForIdle(page);
-    await clickSave(page);
+    await saveAcknowledgingWarnings(page, async () => /\/ui\/Quote\/Edit\/\d+/.test(page.url()));
     await page.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 120_000 });
     await expectToast(page, /MultiQuote created from Quote/, 'any', 30_000);
     const reference = await referenceFromTitle(page, /RSK\d+Q\d+/);
@@ -264,7 +301,7 @@ export class QuotePage {
     await page.waitForURL('**/ui/Quote/ReQuote', { timeout: 90_000 });
     await expect(page.locator('button[title="Save"]').first()).toBeVisible({ timeout: 60_000 });
     await waitForIdle(page);
-    await clickSave(page);
+    await saveAcknowledgingWarnings(page, async () => /\/ui\/Quote\/Edit\/\d+/.test(page.url()));
     await page.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 120_000 });
     const toast = (await page.locator('.toast').first().innerText({ timeout: 10_000 }).catch(() => '')).replace(/\s+/g, ' ').trim();
     const reference = await referenceFromTitle(page, /RSK\d+Q\d+/);
@@ -285,6 +322,7 @@ export class QuotePage {
     const saved = page.waitForResponse((r) => /api\/quote\/UpdateQuote/i.test(r.url()), { timeout: 60_000 });
     await clickSave(page);
     expect((await saved).ok(), 'UpdateQuote succeeded').toBeTruthy();
+    await acknowledgeWarnings(page);
     return true; // the premium is now flagged as possibly changed: re-price before taking up
   }
 
@@ -433,4 +471,45 @@ export class QuotePage {
   async expectIssued(): Promise<void> {
     await expect(this.page.getByText('Quote Issued', { exact: true })).toBeVisible();
   }
+}
+
+const INCEPTION_LABELS = ['Incepts On', 'Inception Date', 'Inception'];
+
+/**
+ * Sets the inception date on a quote page that is still unsaved (the Model copy tab). The label differs between screens,
+ * so each of INCEPTION_LABELS is tried (opening Submission Information when the field is not on screen). When the quote has
+ * no editable inception field the date is left as copied and a warning is logged, so the run carries on.
+ * Returns whether the date was set.
+ */
+export async function setQuoteInceptionDate(page: Page, date: Date): Promise<boolean> {
+  const anyLabelShown = async () => {
+    for (const label of INCEPTION_LABELS) if (await fieldContainer(page, label).isVisible()) return true;
+    return false;
+  };
+  // The Model copy tab renders its sections a little after the Save button: wait for the header, then open it once
+  // (a second click would collapse it again)
+  const submissionInfo = page.getByRole('button', { name: 'Submission Information', exact: true });
+  await submissionInfo.waitFor({ state: 'visible', timeout: 60_000 }).catch(() => {});
+  if (!(await anyLabelShown()) && (await submissionInfo.isVisible())) {
+    await submissionInfo.click();
+    await expect.poll(anyLabelShown, { timeout: 30_000 }).toBe(true).catch(() => {});
+  }
+  for (const label of INCEPTION_LABELS) {
+    const container = fieldContainer(page, label);
+    if (!(await container.isVisible()) || !(await container.getByRole('button', { name: 'Toggle calendar' }).count())) continue;
+    await container.scrollIntoViewIfNeeded();
+    if ((await field(page, label).inputValue()).trim() !== formatDate(date)) {
+      await selectDate(page, label, date);
+      // "Changing the dates at Parent level shall change the dates of their child components" asks for a Confirm
+      const confirm = page.getByRole('dialog').filter({ hasText: /Changing the dates at Parent level/ });
+      if (await confirm.waitFor({ state: 'visible', timeout: 8_000 }).then(() => true, () => false)) {
+        await confirm.getByRole('button', { name: 'Confirm', exact: true }).click();
+        await expect(confirm).toBeHidden({ timeout: 15_000 });
+      }
+    }
+    await expect(field(page, label), `${label} on the Model copy`).toHaveValue(formatDate(date));
+    return true;
+  }
+  console.warn(`Inception date ${formatDate(date)} was not set on the Model copy: no editable ${INCEPTION_LABELS.join(' / ')} field found`);
+  return false;
 }

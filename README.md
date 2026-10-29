@@ -10,7 +10,9 @@
 ![App](https://img.shields.io/badge/AdvantageGo-Underwriting-b8860b)
 ![PI](https://img.shields.io/badge/PI-full%20flows-2ea44f)
 ![CMBC](https://img.shields.io/badge/CMBC-full%20flows-2ea44f)
-![PPP · MTP · Fleet](https://img.shields.io/badge/PPP%20·%20MTP%20·%20Fleet-page%20checks%20only-dbab09)
+![MTP](https://img.shields.io/badge/MTP-full%20flows-2ea44f)
+![PPP](https://img.shields.io/badge/PPP-full%20flows-dbab09)
+![Fleet](https://img.shields.io/badge/Fleet-full%20flows-dbab09)
 
 *Developed by **Deena Yadav***
 
@@ -30,9 +32,9 @@ cancels, reverses… and records every contract it creates.
 |:--|:--:|:--|
 | **PI** | ✅ Full flows | Quote → Policy → Endorsement → Reversal → Renewal → Cancellation |
 | **CMBC** | ✅ Full flows | Quote (PDBI + Liability + schedule) → Policy → Endorsement → Renewal → Cancellation |
-| **PPP** | 🟡 Page checks | Generic "does every page load?" checks once its URL is set |
-| **MTP** | 🟡 Page checks | same |
-| **Fleet** | 🟡 Page checks | same |
+| **MTP** | ✅ Full flows | Motor Trade: Quote (PDBI + Liability + Road Risks + Legal Expenses + schedule) → Policy → Endorsement → Reversal → Mid-Term & Inception Cancellation → Renewal |
+| **PPP** | 🟡 Full flows (reinstatement blocked) | UK Property Investors Protection Plan: Quote (schedule + commission) → Policy → Endorsement → Reversal → Mid-Term Cancellation → Renewal. Reinstate fails on a backend pricing halt |
+| **Fleet** | 🟡 Full flows | Fleet: Quote (schedule import + commission + **Experience Call before Get Price**) → Policy → Endorsement → Reversal → Mid-Term Cancellation → Renewal |
 
 > Every product lives in **its own folder** and shares no flow code with the others, so a change to one product can never break another.
 
@@ -90,7 +92,7 @@ npm run smoke:select                # interactive: which products? one after ano
 | ⏭️ **Skip** the sign-in check | add `--no-auth` *(see the warning in [Troubleshooting](#troubleshooting))* |
 | 🧱 Run Playwright directly (all products, shared report) | `npx playwright test` |
 
-Shortcuts for the other products: `npm run smoke:ppp` · `smoke:mtp` · `smoke:fleet`.
+Shortcuts for the other products: `npm run smoke:mtp` · `smoke:ppp` · `smoke:fleet`.
 Anything the runner doesn't know (`--headed`, `--workers=1`, `-g "…"`, a spec path…) is passed straight to `playwright test`.
 
 <details>
@@ -206,7 +208,7 @@ flowchart TD
 | Checklist row | Status | What the test does |
 |:--|:--:|:--|
 | Create Submission · Convert to Quote · Get Pricing | ✅ | New Submission → details → Convert to Quote → add risk section → Get Price ("Price is returned…") |
-| Get Commission | ✅ | PI isn't eligible for ⋮ → Get Commission, so Broker Commission is added with **+** in DETAILS → Commission (12%) |
+| Get Commission | ✅ | PI isn't eligible for ⋮ → Get Commission, so the defaulted Broker Commission row gets its Override % (12%) in DETAILS → Commission (test: Add Broker Commission) |
 | Quote create task | ✅ | Creates an *Underwriting Referral – PI* task, then completes it (card ⋮ → Complete) |
 | Quote Documents – Generation & Download | ✅ | Automatic Wording terms, PDF upload, download (byte-compared); *Generate Document* only on an issued quote |
 | Quote History · Links · Tasks · Licence | ✅ | Timeline, Links, Tasks and Licence tabs |
@@ -264,10 +266,71 @@ flowchart LR
 | MTA – Reversal · MTA – Inception Cancellation Policy | ⬜ | |
 | Documents/datalake payload · Data lake · ALS & server-folder payloads | 🔒 | Backend evidence |
 
-### 🧩 PPP · MTP · Fleet
+<a id="mtp"></a>
 
-Registered with a config only. Set `<KEY>_URL` in `.env` and the **generic page checks** (does each page load, is the user logged in, is the build label right) start running.
-Their business flows still need pages and steps — see [Adding a product](#add-product).
+### 🚗 MTP (Motor Trade) — `tests/mtp/flows.spec.ts`
+
+Own folder `src/products/mtp/` (data, `MtpSectionsPage`, `flows/quote.ts`, `flows/policy.ts`); it shares only the low-level pages with the other products.
+Env: `MTP_URL`, `MTP_TEMPLATE_QUOTE_URL` (reference quote RSK0003740201Q001, Taken Up), `MTP_SCHEDULE_IMPORT`, plus the `MTP_*` resume URLs.
+
+| Checklist row | Status | Notes |
+|:--|:--:|:--|
+| Convert to Quote (PDBI, Liability, Road Risks, Legal Expenses) | ✅ | Product *Motor Trade*. Needs the Risk Validation answer *Yes*, the analysis codes (Section G / 45 / 45.1 / 45.11 / 4511100) and the Claims History fields. The offering (SME) is defaulted, **the risk sections are not**: the test adds them |
+| Create working quote from the reference model | ✅ | ⋮ → Model |
+| Insert schedule with geocoding and peril score | ✅ | Imports `MTP/MTP_Schedule_Import.xlsx` (the file must be saved by Excel: the app's own export has non-standard cell references and the importer reads it as empty) |
+| Get Commission · Get Pricing | ✅ | Every section is listed as *not rated* in the commission dialog; the test accepts it. Next Stage answers with a warnings banner (*Selected Product Hazard*) that is acknowledged. **Get Price is only offered from the 2nd stage, UW Review & Process**, so Next Stage comes first. **Geocoding + Peril Score is mandatory before Get Price**: when the app answers *"The Geocoding for all schedule items have not been done"* the test runs *Geocode and Get Peril Score* and prices again (`getPriceGeocodingIfMissing`). Each product has its own stages and operations, which is why MTP keeps its own flows |
+| Quote Terms and document upload / download · Search / Advance search | ✅ | |
+| Issue Quote · Multi-Quote · Taken up quote · Requote | ✅ | |
+| General endorsement → take-up → MTA pricing · MTA – Reversal | ✅ | |
+| Mid-Term Cancellation – Pricing and Reinstate | ✅ | |
+| Renewals – Pricing | ✅ | Own Bound policy → Renew – Quote → **CTA rationale** (Details → Premium, mandatory once the renewal inherits a CTA) → price (geocoding done first when missing, as above) → issue → take up → Bound renewal policy |
+| MTA – Inception Cancellation Policy – Pricing | ✅ | Own Bound policy → ⋮ Inception Cancellation → Save (Confirm *"Do you wish to confirm the change?"*, then Ok on *"Effective dates of the Child components…"*) → Get Price → Confirm Cancellation → documents |
+| Documents/datalake payload · Data lake · ALS & server-folder payloads | 🔒 | Backend evidence |
+
+> The backend document service sometimes ends one policy document **"In Error"**. The *Taken up quote* test reports it; set-up policies (for cancellation / renewal) do not assert documents, so the later policy tests still run. (An Inception Cancellation's documents ended "In Error" in two earlier runs and completed in the latest one, so it is intermittent.)
+
+<a id="ppp"></a>
+
+### 🏘️ PPP (UK Property Investors Protection Plan) — `tests/ppp/flows.spec.ts`
+
+Own folder `src/products/ppp/` (data, `PppSectionsPage`, `flows/quote.ts`, `flows/policy.ts`). Env: `PPP_URL`, `PPP_TEMPLATE_QUOTE_URL` (reference quote RSK0003740401Q001, Taken Up), `PPP_SCHEDULE_IMPORT`, plus the `PPP_*` resume URLs.
+
+| Checklist row | Status | Notes |
+|:--|:--:|:--|
+| Convert to Quote | ✅ | Needs Business Type, *All buildings constructed after 01/01/2000?* = Yes and Claims History years = 0 |
+| Create working quote · Insert schedule · Get Commission · Get Pricing | ✅ | Working quote = ⋮ → Model copy of the reference quote, which already has the PPP risk section, its covers and a Broker Commission row (the test only updates that row's percentage). The schedule import has an extra *Define Mapping* notice |
+| Quote create task · Documents · History · Search | ✅ | Task type *Underwriting Referral - PPP*; the Complete click is repeated because it sometimes has no effect |
+| Issue Quote · Multi-Quote · Taken up quote · Requote | ✅ | Taken Up acknowledges the *no Survey Details* warning |
+| General endorsement → take-up → MTA pricing · MTA – Reversal | ✅ | |
+| Decline · Renewals | ✅ | |
+| Mid-Term Cancellation | ✅ | The cancellation itself works |
+| Reinstate Policy | ❌ | The reinstatement MTA halts in the backend (*Halted At : PPPV2RECPolicyReview Stage – AutoRunWorkflow : Pricing is Failed*) and Get Price opens no dialog on it. The test reports that message |
+| Data lake | 🔒 | Backend evidence |
+
+### 🧩 Fleet
+
+Own folder `src/products/fleet/` (data, `FleetSectionsPage`, `flows/quote.ts`, `flows/policy.ts`). Env: `FLEET_URL`, `FLEET_SCHEDULE_IMPORT`. No fixed reference quote: the quote created from the submission (inception today − 10 days; offering *Vantage Fleet* → FLEET section + covers → schedule import → commission) is the model, and every other Fleet quote is a ⋮ → Model copy of it.
+
+| Checklist row | Status | Notes |
+|:--|:--:|:--|
+| Get Commission | ✅ | ⋮ → Get Commission (Fleet is eligible) |
+| Get Experience Call | ✅ | *Number of years claims experience* (Details → Claims Experience Analysis → Years Claims Experience) is set above 0 (`fleetClaims.years`), then ⋮ → Experience Call. It runs **before Get Price** (and before Next Stage) in every pricing path, and again on endorsement quotes when offered |
+| Get Claims · CDL call · schedule add/update/delete + export · party creation | ⬜ | Not written |
+| Data lake | 🔒 | Backend evidence |
+
+## 📐 Conventions (all five products)
+
+- **Inception date** = today − 10 days, for every new submission and every Model-copy quote (`src/support/dates.ts`). A General Endorsement
+  (Effective From = inception + 10 days) therefore starts today.
+- **Mid-Term Cancellation** takes effect **today** (`effectiveFrom` in each product's cancellation data).
+- **Commission:** ⋮ → *Get Commission* for **Fleet, CMBC and MTP**; **PI and PPP** are not eligible, so the *Override %* of the already-defaulted
+  Broker Commission row is set by hand (the test fails when that row is not there). Test names: `Get Commission` / `Add Broker Commission`.
+- **Warnings:** every product acknowledges any warnings banner (ACKNOWLEDGE) and carries on.
+- **Test groups:** `<Product> - Submission and conversion | Quote | Quote lifecycle | Policy | Cancellation | Renewal`, tagged `@flow` and `@<key>-flow`
+  (`@smoke` is only for the quick page checks). Same step ⇒ same test name in every product (`MultiQuote`, `Requote`, `Renewals`,
+  `Quote Taken up and conversion to Policy`, `MTA - GE Pricing and Confirm Endorsement`, `MTA - Mid Term Cancellation Policy and Reinstate Policy`…).
+- **Contract records** are prefixed with the product (`Fleet Endorsement Quote`, `PPP Mid-Term Cancellation (MTA)`…); env variables are `<KEY>_*` (upper case).
+- Shared test PDF: `src/assets/smoke-doc.pdf`.
 
 ---
 
@@ -285,7 +348,7 @@ A full PI run takes ~25 minutes and a **session can expire mid-run**. Rather tha
 | `PI_ENDORSEMENT_URL` · `PI_ENDORSED_POLICY_URL` | an endorsement already started / finished (one endorsement per policy at a time) |
 | `PI_RENEWAL_BASE_POLICY_URL` · `PI_RENEWAL_QUOTE_URL` · `PI_RENEWAL_POLICY_URL` · `PI_RENEWAL_ENDORSEMENT_URL` | each stage of the renewal |
 | `PI_CANCEL_POLICY_URL` · `PI_CANCEL_MTA_URL` · `PI_REINSTATE_MTA_URL` | each stage of cancel / reinstate |
-| `CMBC_…` | the same idea for CMBC (`CMBC_QUOTE_URL`, `CMBC_POLICY_URL`, `CMBC_ENDORSEMENT_URL`, `CMBC_CANCEL_*`, …) |
+| `CMBC_…` · `MTP_…` | the same idea for CMBC and MTP (`CMBC_QUOTE_URL`, `MTP_POLICY_URL`, `MTP_ENDORSEMENT_URL`, `MTP_ENDORSED_POLICY_URL`, `MTP_CANCEL_*`, …) |
 
 ```bash
 # example: carry on from a Bound policy, run only the policy rows
@@ -343,7 +406,8 @@ src/
 │   ├── platforms/advantagego.ts   login, home page and page checks shared by every AdvantageGo product
 │   ├── pi/      index.ts · data.ts · PiSectionsPage.ts · flows/quote.ts · flows/policy.ts
 │   ├── cmbc/    index.ts · data.ts · CmbcSectionsPage.ts · flows/quote.ts · flows/policy.ts   (own copies: nothing shared with PI)
-│   └── ppp/ fleet/ mtp/      config only for now
+│   ├── mtp/                  full flows (data, MtpSectionsPage, flows/)
+│   └── ppp/ fleet/           config only for now
 ├── pages/advantagego/        low-level page objects (quote, policy, search, documents, grids…) — the ONLY code products share
 ├── config/                   env.ts · auth.ts (session files, one login per host)
 ├── smoke/registerSmokeSuite.ts   the generic checks every product gets
@@ -366,7 +430,7 @@ flowchart TB
 ### ➕ Adding a product
 
 1. **Config** — `src/products/<key>/index.ts`:
-   `export const ppp = defineProduct('ppp', 'PPP', { ...advantageGo, /* overrides */ })` (already scaffolded for ppp, mtp, fleet).
+   `export const ppp = defineProduct('ppp', 'PPP', { ...advantageGo, /* overrides */ })` (already scaffolded for ppp, fleet).
 2. **Register** it in `src/products/index.ts`.
 3. **Enable** it by setting `<KEY>_URL` (and `<KEY>_USER` / `<KEY>_PASSWORD` if it doesn't use SSO) in `.env`.
    That alone turns on the generic page checks, and `npm run smoke:<key>` / `--products <key>` start working.

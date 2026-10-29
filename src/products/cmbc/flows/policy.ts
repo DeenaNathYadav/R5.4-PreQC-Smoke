@@ -50,7 +50,7 @@ export async function cancelPolicyMidTerm(
   page: Page,
   policyUrl: string,
   riskSection: string,
-  data: { reasonCode: string; reasonDescription: string; refundBasis: string },
+  data: { reasonCode: string; reasonDescription: string; refundBasis: string; effectiveFrom?: Date },
   resumeMtaUrl = '',
   log: (msg: string) => void = defaultLog,
 ): Promise<string> {
@@ -65,7 +65,7 @@ export async function cancelPolicyMidTerm(
   } else {
     await gotoWithMenu(page, mtaUrl);
   }
-  await recordContractFromPage(page, 'Mid-Term Cancellation (MTA)');
+  await recordContractFromPage(page, 'CMBC Mid-Term Cancellation (MTA)');
 
   await priceAndConfirmMta(page, mtaUrl, riskSection, log);
   return mtaUrl;
@@ -97,7 +97,7 @@ export async function reinstatePolicy(
     await page.goto(mtaUrl);
   }
   await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 60_000 });
-  await recordContractFromPage(page, 'Reinstatement (MTA)');
+  await recordContractFromPage(page, 'CMBC Reinstatement (MTA)');
   await policyPage.expectReinstated();
   const actions = await listActions(page);
   log(`reinstated policy actions: ${actions.join(' | ')}`);
@@ -144,7 +144,7 @@ async function changePolicy(
     await start(policyPage);
     const endorsement = await policyPage.saveEndorsement();
     endorsementUrl = endorsement.url;
-    await recordContract('Endorsement Quote', endorsement.reference, endorsement.url);
+    await recordContract('CMBC Endorsement Quote', endorsement.reference, endorsement.url);
     log(`endorsement created: ${endorsement.reference} → ${endorsement.url}`);
   }
 
@@ -176,7 +176,7 @@ async function changePolicy(
     }).toPass({ timeout: 120_000, intervals: [3_000] });
     const endorsedPolicy = await new PolicyPage(page).saveConversion(); // same Policy Conversion page as Taken Up
     endorsedPolicyUrl = endorsedPolicy.url;
-    await recordContract('Endorsed Policy', endorsedPolicy.reference, endorsedPolicy.url);
+    await recordContract('CMBC Endorsed Policy', endorsedPolicy.reference, endorsedPolicy.url);
     log(`endorsed policy: ${endorsedPolicy.reference} → ${endorsedPolicy.url}`);
   }
 

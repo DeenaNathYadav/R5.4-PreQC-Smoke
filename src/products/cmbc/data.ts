@@ -3,6 +3,7 @@ import { SubmissionData } from '../../pages/advantagego/NewSubmissionPage';
 import { ConvertToQuoteData, SubmissionDetails } from '../../pages/advantagego/SubmissionPage';
 import { UploadData } from '../../pages/advantagego/QuoteDocumentsPage';
 import { cmbc } from '.';
+import { cancellationDate, inceptionDate } from '../../support/dates';
 import { CmbcSectionData } from './CmbcSectionsPage';
 
 export const cmbcSubmission = (): SubmissionData => ({
@@ -10,7 +11,7 @@ export const cmbcSubmission = (): SubmissionData => ({
   agencyName: 'Anjali,Intermediary',
   agencySearch: 'Anjali',
   agencyNumber: '7401474',
-  inceptsOn: new Date(),
+  inceptsOn: inceptionDate(),
   businessDescription: `CMBC Smoke ${new Date().toISOString().slice(0, 16)}`,
 });
 
@@ -74,7 +75,7 @@ export const cmbcScheduleFile = path.resolve(
 );
 
 export const cmbcDocument: UploadData = {
-  filePath: path.resolve(__dirname, '../../assets/pi-smoke-doc.pdf'),
+  filePath: path.resolve(__dirname, '../../assets/smoke-doc.pdf'),
   documentType: 'Quote',
 };
 
@@ -89,6 +90,7 @@ export const cmbcCancellation = {
   reasonCode: 'Insured Request',
   reasonDescription: 'CMBC SmokeAgent',
   refundBasis: 'Pro-Rata',
+  effectiveFrom: cancellationDate(), // mid-term cancellation takes effect today
 };
 
 export const cmbcReinstatement = { reasonDescription: 'CMBC SmokeAgent' };

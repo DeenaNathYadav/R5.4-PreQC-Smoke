@@ -162,13 +162,19 @@ export async function readPremium(
   page: Page,
   quoteUrl: string,
   grossLabel = 'Policy Period Premium Gross of Comm. & IPT',
+  netLabel = 'Policy Period Premium Net of Comm. & IPT',
 ): Promise<Premium> {
   await page.goto(`/ui/Quote/Edit/${quoteId(quoteUrl)}`);
-  await expandSectionFor(page, 'Premium', 'Calculated On');
+  // The page keeps loading for a while and a click on the section can be swallowed: wait for it and retry
+  await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
+  await expect(async () => {
+    await waitForIdle(page);
+    await expandSectionFor(page, 'Premium', 'Calculated On');
+  }).toPass({ timeout: 150_000, intervals: [3_000] });
   const num = async (label: string) => Number((await field(page, label).inputValue()).replace(/,/g, ''));
   return {
     policyPeriodGross: await num(grossLabel),
-    policyPeriodNet: await num('Policy Period Premium Net of Comm. & IPT'),
+    policyPeriodNet: await num(netLabel),
     calculatedOn: await field(page, 'Calculated On').inputValue(),
   };
 }

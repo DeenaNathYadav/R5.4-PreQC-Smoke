@@ -1,6 +1,6 @@
 import { Page, expect } from '@playwright/test';
 import { businessAction, clickSave, expectTitleWithReload, expectToast, referenceFromTitle, acknowledgeUntil, saveAcknowledgingWarnings } from './entity';
-import { expandSectionFor, field, selectDate, selectDropdown } from './kendo';
+import { expandSectionFor, field, fieldContainer, formatDate, selectDate, selectDropdown } from './kendo';
 
 export interface CreatedPolicy {
   reference: string;
@@ -39,7 +39,12 @@ export class PolicyPage {
     // A warnings banner (ACKNOWLEDGE) can hold the action back, as with the other confirm actions
     const saved = page.locator('.toast').filter({ hasText: 'Policy Saved' }).first();
     await acknowledgeUntil(page, () => saved.isVisible());
-    await expectToast(page, 'Policy Saved', 'any', 120_000);
+    // The "Policy Saved" toast is sometimes gone before it is looked for: the Bound / Booked status says the same
+    await expect(async () => {
+      const toast = await saved.isVisible();
+      const bound = await page.getByRole('listitem').filter({ hasText: /^\s*Bound\s+Booked\s*$/ }).first().isVisible();
+      expect(toast || bound, '"Policy Saved" toast or Bound / Booked status').toBeTruthy();
+    }).toPass({ timeout: 120_000, intervals: [1_000] });
     await expect(page.getByText('Bound', { exact: true }).first()).toBeVisible({ timeout: 60_000 });
   }
 
@@ -52,6 +57,7 @@ export class PolicyPage {
     effectiveFromDaysAfterInception: number;
     reasonCode: string;
     reasonDescription: string;
+    declaration?: string; // mandatory on some products (Fleet): the Declaration section's dropdown
   }): Promise<void> {
     const { page } = this;
     await businessAction(page, 'General Endorsement');
@@ -64,6 +70,43 @@ export class PolicyPage {
     await selectDate(page, 'Effective From', from);
     await selectDropdown(page, 'Reason Code', data.reasonCode);
     await field(page, 'Reason Description').fill(data.reasonDescription);
+    if (data.declaration) await this.chooseDeclaration(data.declaration);
+  }
+
+  /** Effective From on an endorsement / cancellation: picked in the calendar when it is editable, then checked. */
+  private async setEffectiveFrom(date: Date): Promise<void> {
+    const { page } = this;
+    const container = fieldContainer(page, 'Effective From');
+    await container.scrollIntoViewIfNeeded();
+    if (await container.getByRole('button', { name: 'Toggle calendar' }).count()) await selectDate(page, 'Effective From', date);
+    await expect(field(page, 'Effective From'), 'Effective From of the cancellation').toHaveValue(formatDate(date));
+  }
+
+  /** The Declaration section (Fleet): its dropdown is mandatory before Save ("Please enter a valid value for Declaration"). */
+  async chooseDeclaration(value: string): Promise<void> {
+    const { page } = this;
+    // The label carries a required "*", so it isn't matched by the exact-label helpers: look for it by prefix
+    // (other tabs of the page keep hidden labels of the same name, so only a visible one counts)
+    const container = page
+      .locator('main label')
+      .filter({ hasText: /^\s*Declaration/ })
+      .filter({ visible: true })
+      .first()
+      .locator('xpath=ancestor::div[.//input][1]');
+    const header = page.getByRole('button', { name: 'Declaration', exact: true });
+    // The header's aria-expanded reads "true" even while the section is collapsed, so go by whether the field shows
+    for (let attempt = 0; attempt < 2 && !(await container.isVisible()); attempt++) {
+      await header.click();
+      await container.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+    }
+    await expect(container).toBeVisible();
+    const option = page.getByRole('option', { name: value, exact: true });
+    await expect(async () => {
+      if (!(await option.isVisible())) await container.locator('.k-input-button').click();
+      await expect(option).toBeVisible({ timeout: 5_000 });
+    }).toPass({ timeout: 40_000 });
+    await option.click();
+    await expect(container.locator('input').first()).toHaveValue(value);
   }
 
   /**
@@ -125,7 +168,8 @@ export class PolicyPage {
     await row.locator('.dropdown-menu a', { hasText: 'Reverse' }).click();
     const confirm = page.getByRole('dialog').filter({ hasText: /Are you sure you want to reverse this endorsement/ });
     await expect(confirm).toBeVisible({ timeout: 30_000 });
-    await confirm.getByRole('button', { name: 'Yes', exact: true }).click();
+    // When the page's translations have not loaded the buttons show their keys (COMMON.PROMPT.OK_BTN) instead of "Yes"
+    await confirm.getByRole('button', { name: /^(Yes|COMMON\.PROMPT\.OK_BTN)$/ }).click();
     await expect(confirm).toBeHidden({ timeout: 60_000 });
   }
 
@@ -224,16 +268,85 @@ export class PolicyPage {
   /**
    * ⋮ → Mid-Term Cancellation opens an unsaved cancellation (/ui/Policy/Endorsement/<id>/midTermEndorsementPolicy/…).
    * The Endorsement section has the type and Effective From pre-set; this picks the reason code, description and refund basis.
+   * With `effectiveFrom` the Effective From date is set to that date (the cancellation is checked to carry it).
    */
-  async startMidTermCancellation(data: { reasonCode: string; reasonDescription: string; refundBasis: string }): Promise<void> {
+  async startMidTermCancellation(data: {
+    reasonCode: string;
+    reasonDescription: string;
+    refundBasis: string;
+    declaration?: string;
+    effectiveFrom?: Date;
+    /** Fleet leaves the mandatory Effective To empty: picked as inception + this many days. */
+    effectiveToDaysAfterInception?: number;
+  }): Promise<void> {
     const { page } = this;
     await businessAction(page, 'Mid-Term Cancellation');
     await page.waitForURL('**/midTermEndorsementPolicy/**', { timeout: 60_000 });
 
     await expandSectionFor(page, 'Endorsement', 'Reason Code');
+    if (data.effectiveFrom) await this.setEffectiveFrom(data.effectiveFrom);
     await selectDropdown(page, 'Reason Code', data.reasonCode);
     await field(page, 'Reason Description').fill(data.reasonDescription);
     await selectDropdown(page, 'Refund Basis', data.refundBasis);
+    if (data.effectiveToDaysAfterInception !== undefined && !(await field(page, 'Effective To').inputValue()).trim()) {
+      const to = await this.inceptionDate();
+      to.setDate(to.getDate() + data.effectiveToDaysAfterInception);
+      await selectDate(page, 'Effective To', to);
+    }
+    // Only the endorsement form has a Declaration section (Fleet); the cancellation form does not
+    if (data.declaration && (await page.getByRole('button', { name: 'Declaration', exact: true }).count())) {
+      await this.chooseDeclaration(data.declaration);
+    }
+  }
+
+  /**
+   * ⋮ → Inception Cancellation opens an unsaved cancellation from inception (/ui/Policy/Endorsement/<id>/inceptionEndorsementPolicy/…).
+   * Same Endorsement section as the mid-term one: reason code and description, plus the refund basis when the product asks for it.
+   */
+  async startInceptionCancellation(data: { reasonCode: string; reasonDescription: string; refundBasis?: string }): Promise<void> {
+    const { page } = this;
+    await businessAction(page, 'Inception Cancellation');
+    await page.waitForURL('**/inceptionEndorsementPolicy/**', { timeout: 60_000 });
+
+    await expandSectionFor(page, 'Endorsement', 'Reason Code');
+    await selectDropdown(page, 'Reason Code', data.reasonCode);
+    await field(page, 'Reason Description').fill(data.reasonDescription);
+    if (data.refundBasis) await selectDropdown(page, 'Refund Basis', data.refundBasis);
+  }
+
+  /**
+   * Save on the inception cancellation: the app asks "Changing the dates at Parent level … Do you wish to confirm the
+   * change?" (Confirm) and then shows "Effective dates of the Child components have been updated…" (Ok), after which the
+   * cancellation MTA (…P001/MTA001) exists. If the record still has no MTA reference after Ok, Save is pressed once more.
+   */
+  async saveInceptionCancellation(): Promise<void> {
+    const { page } = this;
+    const confirm = page
+      .getByRole('dialog')
+      .filter({ hasText: /Do you wish to confirm the change/ })
+      .getByRole('button', { name: 'Confirm', exact: true });
+    const info = page
+      .getByRole('dialog')
+      .filter({ hasText: /Effective dates of the Child components have been updated/ })
+      .getByRole('button', { name: 'Ok', exact: true });
+    const created = page.getByText(/RSK\d+P\d+\/MTA\d+/).first();
+    let savedAgain = false;
+    let infoSeenAt = 0;
+    await clickSave(page);
+    await acknowledgeUntil(page, async () => {
+      if (await confirm.isVisible()) await confirm.click();
+      if (await info.isVisible()) {
+        await info.click();
+        infoSeenAt = Date.now();
+      }
+      if (await created.isVisible()) return true;
+      if (infoSeenAt && !savedAgain && Date.now() - infoSeenAt > 15_000) {
+        savedAgain = true;
+        await clickSave(page);
+      }
+      return false;
+    }, 180_000);
+    await expect(created).toBeVisible({ timeout: 30_000 });
   }
 
   /** Save on the cancellation page creates the cancellation MTA on the policy: the header reference becomes …P001/MTA001. */

@@ -6,6 +6,7 @@ import { QuoteDocumentsPage } from '../../../pages/advantagego/QuoteDocumentsPag
 import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
+import { inceptionDate } from '../../../support/dates';
 import { cmbc } from '..';
 import { CmbcSectionsPage } from '../CmbcSectionsPage';
 import { cmbcAssignee, cmbcQuote, cmbcSections, cmbcSubmission, cmbcSubmissionDetails } from '../data';
@@ -20,7 +21,7 @@ export const cmbcDocumentWait = { retries: 6, delayMs: 20_000 };
 export async function createCmbcModelCopy(page: Page): Promise<{ reference: string; url: string }> {
   const template = cmbc.env('TEMPLATE_QUOTE_URL');
   if (!template) throw new Error('CMBC_TEMPLATE_QUOTE_URL is not set');
-  const copy = await new QuotePage(page).modelCopy(template);
+  const copy = await new QuotePage(page).modelCopy(template, { inceptsOn: inceptionDate() });
   await recordContract('CMBC Quote (Model copy)', copy.reference, copy.url);
   return copy;
 }

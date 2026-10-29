@@ -4,6 +4,7 @@ import { TaskData } from '../../pages/advantagego/QuotePage';
 import { UploadData } from '../../pages/advantagego/QuoteDocumentsPage';
 import { ConvertToQuoteData, SubmissionDetails } from '../../pages/advantagego/SubmissionPage';
 import { pi } from '.';
+import { cancellationDate, inceptionDate } from '../../support/dates';
 import { PiSectionData } from './PiSectionsPage';
 
 // QC test data for the PI smoke flows.
@@ -12,7 +13,7 @@ export const piSubmission = (): SubmissionData => ({
   agencyName: 'Anjali,Intermediary',
   agencySearch: 'Anjali',
   agencyNumber: '7401474',
-  inceptsOn: new Date(),
+  inceptsOn: inceptionDate(),
   businessDescription: `PI Smoke ${new Date().toISOString().slice(0, 16)}`,
 });
 
@@ -50,7 +51,7 @@ export const piTask: TaskData = {
 
 // Quote → DOCUMENTS → Attach File
 export const piDocument: UploadData = {
-  filePath: path.resolve(__dirname, '../../assets/pi-smoke-doc.pdf'),
+  filePath: path.resolve(__dirname, '../../assets/smoke-doc.pdf'),
   documentType: 'Quote',
 };
 
@@ -66,17 +67,18 @@ export const piEndorsement = {
   /** Effective From = the policy's inception date + this many days (the form leaves it empty; Effective To is pre-filled). */
   effectiveFromDaysAfterInception: 10,
   reasonCode: 'Addition/Deletion of Covers/Coverages/Perils',
-  reasonDescription: 'SmokeAgent',
+  reasonDescription: 'PI SmokeAgent',
 };
 
 // Policy → ⋮ → Mid-Term Cancellation → Endorsement section (type "Mid Term Cancellation" and Effective From are pre-set)
 /** Reinstate Contract on the cancelled policy: type and reason code are pre-set by the screen. */
 export const piReinstatement = {
-  reasonDescription: 'SmokeAgent',
+  reasonDescription: 'PI SmokeAgent',
 };
 
-export const piMidTermCancellation = {
+export const piCancellation = {
   reasonCode: 'Insured Request',
-  reasonDescription: 'SmokeAgent',
+  reasonDescription: 'PI SmokeAgent',
   refundBasis: 'Pro-Rata',
+  effectiveFrom: cancellationDate(), // mid-term cancellation takes effect today
 };

@@ -73,6 +73,10 @@ export class PiSectionsPage extends QuoteSectionsPage {
     const grid = new EditableGrid(page, 'Limit and Excess');
     await expect(grid.rows()).toHaveCount(1, { timeout: 30_000 });
     await grid.selectOption(0, 'Basis', data.limitBasis, new RegExp(`^${escapeRegExp(data.limitBasis)} - `));
+    // Choosing the Basis leaves the next editor (Currency) open over the Amount cell: click the heading to close it
+    await limitHeading.click();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('option').first()).toBeHidden({ timeout: 10_000 }).catch(() => {});
     await grid.setText(0, 'Amount', data.limitAmount);
     await grid.setText(0, '_excessAmount', data.excessAmount);
   }

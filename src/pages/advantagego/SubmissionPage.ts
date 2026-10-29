@@ -1,6 +1,6 @@
 import { Page, expect } from '@playwright/test';
 import { expandSectionFor, field, fieldContainer, selectAutocomplete, selectDropdown } from './kendo';
-import { businessAction, clickSave, referenceFromTitle } from './entity';
+import { acknowledgeWarnings, businessAction, referenceFromTitle, clickSave, saveAcknowledgingWarnings, waitForIdle } from './entity';
 
 /** Fields the New Submission form doesn't ask for, but Convert to Quote requires. */
 export interface SubmissionDetails {
@@ -16,6 +16,14 @@ export interface RequiredQuoteField {
   value: string;
 }
 
+/** A numbered question (not a <label> field) whose answer is a dropdown, e.g. MTP's "1. Has the broker visited the client...?". */
+export interface RequiredQuestion {
+  section: string;
+  /** Start of the question text, e.g. "1. Has the broker visited the client". */
+  question: string;
+  value: string;
+}
+
 export interface AnalysisCode {
   type: string;
   value: string;
@@ -28,6 +36,7 @@ export interface ConvertToQuoteData {
   insuranceType?: string;
   contractStructure?: string;
   requiredFields?: RequiredQuoteField[];
+  requiredQuestions?: RequiredQuestion[];
   analysisCodes?: AnalysisCode[];
 }
 
@@ -63,6 +72,7 @@ export class SubmissionPage {
     const saved = page.waitForResponse((r) => /api\/submission\/UpdateSubmission/i.test(r.url()), { timeout: 60_000 });
     await clickSave(page);
     expect((await saved).ok(), 'UpdateSubmission succeeded').toBeTruthy();
+    await acknowledgeWarnings(page);
   }
 
   /** ⋮ → Convert to Quote → pick product → Confirm → fill required fields → Save. */
@@ -81,6 +91,26 @@ export class SubmissionPage {
       await expandSectionFor(page, f.section, f.label);
       await fieldContainer(page, f.label).scrollIntoViewIfNeeded();
       await selectDropdown(page, f.label, f.value);
+    }
+    for (const q of data.requiredQuestions ?? []) {
+      // The Risk Validation header is not a button (unlike Analysis Codes), so it is found by its text
+      const header = page.getByText(q.section, { exact: true }).first();
+      const combo = page
+        .locator(`xpath=//*[starts-with(normalize-space(translate(., ' ', ' ')), "${q.question}")]/following::kendo-combobox[1]`)
+        .first();
+      // The conversion page keeps loading for a while: wait for it, then open the section until the question shows
+      await waitForIdle(page);
+      await expect(async () => {
+        if (!(await combo.isVisible())) {
+          await header.scrollIntoViewIfNeeded();
+          await header.click({ timeout: 8_000 });
+        }
+        await expect(combo).toBeVisible({ timeout: 6_000 });
+      }).toPass({ timeout: 90_000, intervals: [2_000] });
+      await combo.scrollIntoViewIfNeeded();
+      await combo.locator('.k-input-button').click();
+      await page.getByRole('option', { name: q.value, exact: true }).click();
+      await expect(combo.locator('input')).toHaveValue(q.value);
     }
     if (data.analysisCodes?.length) {
       const section = page.getByRole('button', { name: 'Analysis Codes', exact: true });
@@ -106,7 +136,7 @@ export class SubmissionPage {
     }
 
     // The quote only gets a reference once saved: /ui/Quote/Conversion → /ui/Quote/Edit/<id>
-    await clickSave(page);
+    await saveAcknowledgingWarnings(page, async () => /\/ui\/Quote\/Edit\/\d+/.test(page.url()), 90_000);
     await page.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 90_000 });
     const reference = await referenceFromTitle(page, /RSK\d+Q\d+/);
     return { reference, url: page.url() };

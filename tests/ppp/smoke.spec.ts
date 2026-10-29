@@ -2,5 +2,4 @@ import { registerSmokeSuite } from '../../src/smoke/registerSmokeSuite';
 
 registerSmokeSuite('ppp');
 
-// Add ppp-specific critical-path tests (create/search/submit flows) in this folder,
-// importing { test, expect } from '../../src/fixtures'.
+// The ppp business flows are in flows.spec.ts (import { test, expect } from '../../src/fixtures').

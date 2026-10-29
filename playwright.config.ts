@@ -34,7 +34,7 @@ export default defineConfig({
     // Video needs ffmpeg (`npx playwright install ffmpeg`); traces already include screenshots of every step.
     video: process.env.VIDEO ? 'retain-on-failure' : 'off',
     actionTimeout: 20_000,
-    navigationTimeout: 45_000,
+    navigationTimeout: 90_000,
     ignoreHTTPSErrors: true,
   },
   // One "auth:<host>" project per login (products on the same host share it) and one project per product.

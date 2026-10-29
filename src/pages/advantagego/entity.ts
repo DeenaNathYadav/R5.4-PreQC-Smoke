@@ -31,6 +31,23 @@ export async function acknowledgeUntil(page: Page, done: () => Promise<boolean>,
   }
 }
 
+/**
+ * Acknowledges every warnings banner that shows up within `graceMs` (and any that follow within a few seconds), whatever the
+ * warning says. Every product treats a warning as "acknowledge and carry on". Returns how many were acknowledged.
+ */
+export async function acknowledgeWarnings(page: Page, graceMs = 4_000): Promise<number> {
+  const acknowledge = page.getByText('ACKNOWLEDGE', { exact: true }).first();
+  let clicked = 0;
+  let wait = graceMs;
+  while (await acknowledge.waitFor({ state: 'visible', timeout: wait }).then(() => true, () => false)) {
+    await acknowledge.click().catch(() => {});
+    clicked++;
+    await page.waitForTimeout(2_000);
+    wait = 3_000; // a second warning can follow the first
+  }
+  return clicked;
+}
+
 /** Save, then wait until `done()` holds (acknowledging a warnings banner on the way, see acknowledgeUntil). */
 export async function saveAcknowledgingWarnings(page: Page, done: () => Promise<boolean>, timeout = 120_000): Promise<void> {
   await clickSave(page);
@@ -65,6 +82,19 @@ export async function gotoWithMenu(page: Page, url: string, attempts = 3): Promi
   }
 }
 
+/** Reloads the current page and waits for its ⋮ menu, reloading again when the page renders blank (see gotoWithMenu). */
+export async function reloadWithMenu(page: Page, attempts = 3): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    await page.reload();
+    try {
+      await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 40_000 });
+      return;
+    } catch (e) {
+      if (attempt >= attempts) throw e;
+    }
+  }
+}
+
 /** Every entry in the ⋮ "More" menu for the entity's current stage (some may be greyed out). */
 export async function listActions(page: Page): Promise<string[]> {
   await waitForIdle(page);
@@ -73,8 +103,16 @@ export async function listActions(page: Page): Promise<string[]> {
   await page.locator('.dropdown-menu:visible li').first().waitFor({ timeout: 10_000 }).catch(() => {});
   const texts = (await page.locator('.dropdown-menu:visible li').allInnerTexts()).map((t) => t.trim()).filter(Boolean);
   // Closing the menu with Escape leaves the ⋮ button without its "More" title, so reload to a clean state
-  await page.reload();
-  await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 60_000 });
+  // (a reload sometimes renders blank on a slow host: reload again, as gotoWithMenu does)
+  for (let attempt = 1; ; attempt++) {
+    await page.reload();
+    try {
+      await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 40_000 });
+      break;
+    } catch (e) {
+      if (attempt >= 3) throw e;
+    }
+  }
   return [...new Set(texts)];
 }
 

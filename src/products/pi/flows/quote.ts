@@ -5,35 +5,66 @@ import { CreatedPolicy, PolicyPage } from '../../../pages/advantagego/PolicyPage
 import { QuoteDocumentsPage } from '../../../pages/advantagego/QuoteDocumentsPage';
 import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { QuoteSectionsPage } from '../../../pages/advantagego/QuoteSectionsPage';
+import { PiSectionsPage } from '../PiSectionsPage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
-import { pi } from '..';
-import { piQuote, piSections, piSubmission, piSubmissionDetails, piTask } from '../data';
+import { inceptionDate } from '../../../support/dates';
+import { piCommission, piQuote, piSections, piSubmission, piSubmissionDetails, piTask } from '../data';
 
 // PI's own quote → policy steps. CMBC (and every other product) has its own copy under src/products/<key>/flows/,
 // so a change to one product's steps never touches another's.
 
-/** New Submission → complete details → Convert to Quote. For tests that need a quote of their own. */
+/**
+ * The PI quote every other PI quote is copied from: the quote created from the submission in the "PI - Quote" chain (or built by
+ * createPiModelCopy). There is no fixed reference quote.
+ */
+export const piModel = { url: '' };
+
+/** New Submission (inception today − 10 days) → complete details → Convert to Quote: the bare quote, with no sections yet. */
 export async function createPiQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
-  // A template quote (an issued one) is much quicker: Model copies it into a fresh quote in a few seconds
-  const template = pi.env('TEMPLATE_QUOTE_URL');
-  if (template) {
-    const copy = await new QuotePage(page).modelCopy(template);
-    await recordContract('Quote (Model copy)', copy.reference, copy.url);
-    return { submissionId: 0, ...copy };
-  }
   const newSubmission = new NewSubmissionPage(page);
   await newSubmission.open();
   await newSubmission.fill(piSubmission());
   const { reference, contractId } = await newSubmission.submit();
-  await recordContract('Submission', reference, `/ui/Submission/Edit/${contractId}`);
+  await recordContract('PI Submission', reference, `/ui/Submission/Edit/${contractId}`);
 
   const submission = new SubmissionPage(page);
   await submission.open(contractId);
   await submission.completeDetails(piSubmissionDetails);
   const quote = await submission.convertToQuote(piQuote);
-  await recordContract('Quote', quote.reference, quote.url);
+  await recordContract('PI Quote', quote.reference, quote.url);
   return { submissionId: contractId, ...quote };
+}
+
+/** Quote → Sections: the Accountants risk section with its activities, income, limit and excess, saved. */
+export async function addPiSections(page: Page, quoteUrl: string): Promise<void> {
+  const sections = new PiSectionsPage(page);
+  await sections.open(quoteUrl);
+  await sections.addRiskSection(piSections.riskSection);
+  await sections.fillPiRiskDetails(piSections);
+  await sections.saveExpectingValidation(); // limit & excess missing → coverage nodes appear
+  await sections.setLimitAndExcess(piSections.limitAndExcess);
+  await sections.save();
+}
+
+/** A complete PI quote built from a submission: sections, a price, then the Broker Commission override. Becomes the model (piModel). */
+export async function createPiModelQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
+  const quote = await createPiQuote(page);
+  await addPiSections(page, quote.url);
+  await new PiSectionsPage(page).getPrice([piSections.riskSection]);
+  const quotePage = new QuotePage(page);
+  await quotePage.open(quote.url);
+  await quotePage.addBrokerCommission(piCommission.brokerPercent, { requireDefaultRow: true });
+  piModel.url = quote.url;
+  return quote;
+}
+
+/** ⋮ → Model on the model quote (built first when this worker has none): a fresh quote with sections and commission already on it. */
+export async function createPiModelCopy(page: Page): Promise<{ reference: string; url: string }> {
+  if (!piModel.url) await createPiModelQuote(page);
+  const copy = await new QuotePage(page).modelCopy(piModel.url, { inceptsOn: inceptionDate() });
+  await recordContract('PI Quote (Model copy)', copy.reference, copy.url);
+  return copy;
 }
 
 /**
@@ -65,7 +96,7 @@ export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSe
 }
 
 /** An issued quote → Taken Up → Policy Conversion → Save → Confirm Cover (Bound), then all policy documents Completed. */
-export async function takeUpAndBind(page: Page, quoteUrl: string, riskSection: string, step = 'Policy'): Promise<CreatedPolicy> {
+export async function takeUpAndBind(page: Page, quoteUrl: string, riskSection: string, step = 'PI Policy'): Promise<CreatedPolicy> {
   const quote = new QuotePage(page);
   await quote.open(quoteUrl);
   await quote.takeUp([riskSection]);
@@ -80,16 +111,11 @@ export async function takeUpAndBind(page: Page, quoteUrl: string, riskSection: s
 }
 
 /**
- * A fresh Bound New Business PI policy: Model copy of the template quote → price → issue (self-approved) → take up.
- * Needs PI_TEMPLATE_QUOTE_URL (an issued quote to copy).
+ * A fresh Bound New Business PI policy: Model copy of the model quote → price → issue (self-approved) → take up.
  */
 export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
-  const template = pi.env('TEMPLATE_QUOTE_URL');
-  if (!template) throw new Error('PI_TEMPLATE_QUOTE_URL is not set: needed to make a fresh quote with Model');
-  const quote = new QuotePage(page);
-  const copy = await quote.modelCopy(template);
-  await recordContract('Quote (Model copy)', copy.reference, copy.url);
-  await quote.open(copy.url);
+  const copy = await createPiModelCopy(page);
+  await new QuotePage(page).open(copy.url);
   await new QuoteSectionsPage(page).getPrice([piSections.riskSection]);
   await issueWithSelfApproval(page, copy.url, piSections.riskSection, piTask.assignee);
   return takeUpAndBind(page, copy.url, piSections.riskSection);

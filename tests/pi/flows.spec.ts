@@ -3,10 +3,10 @@ import type { Page } from '@playwright/test';
 import { test, expect } from '../../src/fixtures';
 import { businessAction, listActions } from '../../src/pages/advantagego/entity';
 import { cancelPolicyMidTerm, endorsePolicy, reinstatePolicy, reverseEndorsement } from '../../src/products/pi/flows/policy';
-import { createBoundPolicy, createPiQuote, issueWithSelfApproval, takeUpAndBind } from '../../src/products/pi/flows/quote';
+import { addPiSections, createBoundPolicy, createPiModelCopy, createPiQuote, issueWithSelfApproval, piModel, takeUpAndBind } from '../../src/products/pi/flows/quote';
 import { env } from '../../src/config/env';
 import { pi } from '../../src/products/pi';
-import { piDecline, piDocument, piEndorsement, piMidTermCancellation, piReinstatement, piQuote, piCommission, piSections, piSubmission, piSubmissionDetails, piTask } from '../../src/products/pi/data';
+import { piDecline, piDocument, piEndorsement, piCancellation, piReinstatement, piQuote, piCommission, piSections, piSubmission, piSubmissionDetails, piTask } from '../../src/products/pi/data';
 import { PiSectionsPage } from '../../src/products/pi/PiSectionsPage';
 import { PolicyPage } from '../../src/pages/advantagego/PolicyPage';
 import { QuoteDocumentsPage } from '../../src/pages/advantagego/QuoteDocumentsPage';
@@ -16,15 +16,16 @@ import { SubmissionPage } from '../../src/pages/advantagego/SubmissionPage';
 import { QuoteSectionsPage, readPremium } from '../../src/pages/advantagego/QuoteSectionsPage';
 import { IssueOutcome, QuotePage } from '../../src/pages/advantagego/QuotePage';
 import { recordContract } from '../../src/support/contracts';
+import { inceptionDate } from '../../src/support/dates';
 
 // The bound policy: created by "Quote Taken up…" below, or an existing one (PI_POLICY_URL) for the policy rows alone
 let policyUrl: string = pi.env('POLICY_URL');
 
-// One test per row of the "PI" sheet in "AXA R5.4 - CMBC-MTP-Fleet Smoke.xlsx".
+// One test per row of the "PI" sheet in "AXA R5.4 - CMBC-MTP-Fleet Smoke (1).xlsx".
 // test.fixme = not automated yet (reported as skipped). Remove it as each flow is implemented.
 
 // Serial: each step builds on the submission/quote created by the previous one.
-test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
+test.describe.serial('PI - Quote', { tag: ['@flow', '@pi-flow'] }, () => {
   let submissionId: number;
   let submissionReference = '';
   let quoteReference = '';
@@ -39,31 +40,17 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
     submissionReference = quoteReference.slice(0, 11); // RSK00038356 01 Q001 → RSK00038356
   };
 
-  // PI_TEMPLATE_QUOTE_URL = an issued quote to copy with ⋮ → Model instead of creating a submission and converting it
-  const template = pi.env('TEMPLATE_QUOTE_URL');
-
-  test('Create Quote (Model copy of the template quote)', async ({ page }, testInfo) => {
-    test.skip(!template, 'PI_TEMPLATE_QUOTE_URL is not set: the quote is created through Create Submission + Convert to Quote');
-    const copy = await new QuotePage(page).modelCopy(template);
-    quoteUrl = copy.url;
-    quoteReference = copy.reference;
-    submissionReference = copy.reference.slice(0, 11);
-    testInfo.annotations.push({ type: 'quote', description: copy.reference });
-    await recordContract('Quote (Model copy)', copy.reference, copy.url);
-    console.log(`PI quote created (Model copy): ${copy.reference} → ${copy.url}`);
-  });
-
-  // Always run (one smoke test of New Submission → Convert to Quote). With a template the chain below carries on with the
-  // Model copy, so this submission and its quote are not used by the later steps.
+  // New Submission (inception today − 10 days) → Convert to Quote: the quote the rest of the chain works on, and the model the other
+  // PI quotes are copied from (there is no fixed reference quote)
   test('Create Submission', async ({ page }, testInfo) => {
     const newSubmission = new NewSubmissionPage(page);
     await newSubmission.open();
     await newSubmission.fill(piSubmission());
     const { reference, contractId } = await newSubmission.submit();
     submissionId = contractId;
-    if (!template) submissionReference = reference;
+    submissionReference = reference;
     testInfo.annotations.push({ type: 'submission', description: `${reference} (${contractId})` });
-    await recordContract('Submission', reference, `/ui/Submission/Edit/${contractId}`);
+    await recordContract('PI Submission', reference, `/ui/Submission/Edit/${contractId}`);
     console.log(`PI submission created: ${reference} → /ui/Submission/Edit/${contractId}`);
 
     // Required by Convert to Quote but not asked for on the New Submission form
@@ -76,12 +63,10 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
     const submission = new SubmissionPage(page);
     await submission.open(submissionId);
     const quote = await submission.convertToQuote(piQuote);
-    if (!template) {
-      quoteUrl = quote.url;
-      quoteReference = quote.reference;
-    }
+    quoteUrl = quote.url;
+    quoteReference = quote.reference;
     testInfo.annotations.push({ type: 'quote', description: quote.reference });
-    await recordContract('Quote', quote.reference, quote.url);
+    await recordContract('PI Quote', quote.reference, quote.url);
     console.log(`PI quote created: ${quote.reference} → ${quote.url}`);
   });
 
@@ -90,14 +75,7 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
 
   test('Get Pricing', async ({ page }, testInfo) => {
     const sections = new PiSectionsPage(page);
-    await sections.open(quoteUrl);
-    if (!template) {
-      await sections.addRiskSection(piSections.riskSection);
-      await sections.fillPiRiskDetails(piSections);
-      await sections.saveExpectingValidation(); // limit & excess missing → coverage nodes appear
-      await sections.setLimitAndExcess(piSections.limitAndExcess);
-      await sections.save();
-    } // a Model copy already carries the risk section, activities, income and limit & excess
+    await addPiSections(page, quoteUrl);
 
     // Pass = "Price is returned back from the rating engine" success toast
     await sections.getPrice([piSections.riskSection]);
@@ -108,14 +86,15 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
     console.log(`PI premium: ${JSON.stringify(premium)}`);
   });
 
-  // PI is not eligible for ⋮ → Get Commission: the Broker Commission deduction is added manually (+ in Commission).
+  // PI is not eligible for ⋮ → Get Commission: the Override % of the defaulted Broker Commission row is set manually.
   // Next Stage → Issue Quote need this Broker Commission row. It is only kept once the quote has its risk
   // sections, so this runs after "Get Pricing" (Issue Quote re-prices when commission changed the premium).
-  test('Get Commission', async ({ page }) => {
+  test('Add Broker Commission', async ({ page }) => {
     const quote = new QuotePage(page);
     await quote.open(quoteUrl);
-    if (!template) await quote.addBrokerCommission(piCommission.brokerPercent); // a Model copy already has the 12% row
+    await quote.addBrokerCommission(piCommission.brokerPercent, { requireDefaultRow: true }); // the row must already be defaulted
     await quote.expectBrokerCommission();
+    piModel.url = quoteUrl; // sections and commission are on it now: the model the other PI quotes are copied from
   });
 
   test('Quote create task', async ({ page }) => {
@@ -139,7 +118,7 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
 
     const file = await docs.download(title);
     // The app adds "(2)", "(3)"… to the name when a document with the same name was uploaded before
-    expect(file.fileName).toMatch(/^pi-smoke-doc(\(\d+\))?\.pdf$/);
+    expect(file.fileName).toMatch(/^smoke-doc(\(\d+\))?\.pdf$/);
     expect(file.size, 'downloaded bytes').toBe(fs.statSync(piDocument.filePath).size);
     await docs.expectDownloadedOn(title);
 
@@ -159,15 +138,9 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
     await expect(page.getByText('Price', { exact: true }).locator('visible=true').first()).toBeVisible();
 
     await quote.openHistoryTab(quoteUrl, 'Links');
-    if (template) {
-      // A Model copy has no submission link: the Links tab lists the quote itself as the Original
-      await expect(page.getByText(quoteReference, { exact: true }).locator('visible=true').first()).toBeVisible();
-      await expect(page.getByText('Original', { exact: true }).locator('visible=true').first()).toBeVisible();
-    } else {
-      // the submission this quote was converted from
-      await expect(page.getByText(submissionReference, { exact: true }).locator('visible=true').first()).toBeVisible();
-      await expect(page.getByText('Converted', { exact: true }).locator('visible=true').first()).toBeVisible();
-    }
+    // the submission this quote was converted from
+    await expect(page.getByText(submissionReference, { exact: true }).locator('visible=true').first()).toBeVisible();
+    await expect(page.getByText('Converted', { exact: true }).locator('visible=true').first()).toBeVisible();
 
     // Tasks raised on the quote (the Licence Referral task is checked in "License Check - Task Generation")
     expect(await quote.taskStatus(quoteUrl, piTask.taskType, piTask.subject)).toBe('Completed');
@@ -250,7 +223,7 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
     expect(multi.reference.slice(0, 13), 'same risk as the source quote').toBe(quoteReference.slice(0, 13));
     await expect(page.getByText('Provisional', { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     testInfo.annotations.push({ type: 'multi quote', description: multi.reference });
-    await recordContract('Multi Quote', multi.reference, multi.url);
+    await recordContract('PI Multi Quote', multi.reference, multi.url);
     console.log(`PI multi quote: ${multi.reference} → ${multi.url}`);
   });
 
@@ -267,7 +240,7 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
     const policy = await policyPage.saveConversion();
     policyUrl = policy.url;
     testInfo.annotations.push({ type: 'policy', description: policy.reference });
-    await recordContract('Policy', policy.reference, policy.url);
+    await recordContract('PI Policy', policy.reference, policy.url);
     console.log(`PI policy created: ${policy.reference} → ${policy.url}`);
     await policyPage.confirmCover();
 
@@ -288,13 +261,13 @@ test.describe.serial('PI - Quote', { tag: ['@smoke', '@pi-flow'] }, () => {
     expect(requote.reference).not.toBe(quoteReference);
     await expect(page.getByText('Provisional', { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     testInfo.annotations.push({ type: 'requote', description: requote.reference });
-    await recordContract('Requote', requote.reference, requote.url);
+    await recordContract('PI Requote', requote.reference, requote.url);
     console.log(`PI requote: ${requote.reference} → ${requote.url} (toast: ${requote.toast})`);
   });
 });
 
 // Own quote, so a decline can't take the chain's quote away from later steps (and an earlier failure can't skip it).
-test.describe('PI - Quote lifecycle', { tag: ['@smoke', '@pi-flow'] }, () => {
+test.describe('PI - Quote lifecycle', { tag: ['@flow', '@pi-flow'] }, () => {
   // Needs a quote of its own: declining ends the chain's quote, which later steps still use.
   test('Decline / Not Taken up / Mark as Lost', async ({ page }) => {
     test.setTimeout(10 * 60_000);
@@ -308,12 +281,12 @@ test.describe('PI - Quote lifecycle', { tag: ['@smoke', '@pi-flow'] }, () => {
 
 
 // Serial: the reversal undoes the endorsement made by "MTA - GE Pricing".
-test.describe.serial('PI - Policy', { tag: ['@smoke', '@pi-flow'] }, () => {
+test.describe.serial('PI - Policy', { tag: ['@flow', '@pi-flow'] }, () => {
   let endorsedPolicyUrl: string = pi.env('ENDORSED_POLICY_URL'); // lets the reversal run alone on an existing endorsed policy
 
   // Policy → General Endorsement → fill the Endorsement section → Save (creates the endorsement quote) → Get Price.
   // PI_ENDORSEMENT_URL prices an existing endorsement quote instead of starting a new one (one endorsement per policy at a time).
-  test('MTA - GE Pricing', async ({ page }) => {
+  test('MTA - GE Pricing and Confirm Endorsement', async ({ page }) => {
     test.setTimeout(15 * 60_000);
     const resume = { endorsementUrl: pi.env('ENDORSEMENT_URL'), endorsedPolicyUrl: pi.env('ENDORSED_POLICY_URL') };
     test.skip(!policyUrl && !resume.endorsementUrl && !resume.endorsedPolicyUrl, 'No bound policy (Taken Up did not run; set PI_POLICY_URL to use an existing one)');
@@ -324,19 +297,17 @@ test.describe.serial('PI - Policy', { tag: ['@smoke', '@pi-flow'] }, () => {
   // Endorsement grid → ⋮ → Reverse on the Bound endorsement made above
   test('MTA - Reversal', async ({ page }) => {
     test.setTimeout(5 * 60_000);
-    test.skip(!endorsedPolicyUrl, 'No endorsed policy (MTA - GE Pricing did not complete)');
+    test.skip(!endorsedPolicyUrl, 'No endorsed policy (MTA - GE Pricing and Confirm Endorsement did not complete)');
     await reverseEndorsement(page, endorsedPolicyUrl, piEndorsement.reasonDescription);
   });
 });
 
 
 // Renewal: needs a Bound New Business policy of its own (not the one the endorsement used), made from a Model copy of the
-// template quote. PI_RENEWAL_BASE_POLICY_URL reuses an existing Bound policy instead.
-test.describe('PI - Renewal', { tag: ['@smoke', '@pi-flow'] }, () => {
+// model quote. PI_RENEWAL_BASE_POLICY_URL reuses an existing Bound policy instead.
+test.describe('PI - Renewal', { tag: ['@flow', '@pi-flow'] }, () => {
   test('Renewals - Pricing/License/Task, then endorsement on the renewal policy', async ({ page }, testInfo) => {
     test.setTimeout(20 * 60_000);
-    const template = pi.env('TEMPLATE_QUOTE_URL');
-    test.skip(!template && !pi.env('RENEWAL_BASE_POLICY_URL') && !pi.env('RENEWAL_POLICY_URL'), 'PI_TEMPLATE_QUOTE_URL is not set');
     // PI_RENEWAL_POLICY_URL resumes at the endorsement on an existing Bound renewal policy
     if (pi.env('RENEWAL_POLICY_URL')) {
       await endorsePolicy(page, pi.env('RENEWAL_POLICY_URL'), piSections.riskSection, piEndorsement, {
@@ -348,8 +319,7 @@ test.describe('PI - Renewal', { tag: ['@smoke', '@pi-flow'] }, () => {
     let basePolicyUrl = pi.env('RENEWAL_BASE_POLICY_URL');
     // (not needed when resuming from an existing renewal quote)
     if (!basePolicyUrl && !pi.env('RENEWAL_QUOTE_URL')) {
-      const copy = await new QuotePage(page).modelCopy(template);
-      await recordContract('Quote (Model copy)', copy.reference, copy.url);
+      const copy = await createPiModelCopy(page);
       await new QuoteSectionsPage(page).open(copy.url);
       await new QuoteSectionsPage(page).getPrice([piSections.riskSection]);
       await issueWithSelfApproval(page, copy.url, piSections.riskSection, piTask.assignee);
@@ -367,7 +337,7 @@ test.describe('PI - Renewal', { tag: ['@smoke', '@pi-flow'] }, () => {
       await policyPage.renew();
       const renewal = await policyPage.saveRenewal();
       renewalUrl = renewal.url;
-      await recordContract('Renewal Quote', renewal.reference, renewal.url);
+      await recordContract('PI Renewal Quote', renewal.reference, renewal.url);
       testInfo.annotations.push({ type: 'renewal quote', description: renewal.reference });
       console.log(`PI renewal quote: ${renewal.reference} → ${renewal.url}`);
     }
@@ -388,11 +358,10 @@ test.describe('PI - Renewal', { tag: ['@smoke', '@pi-flow'] }, () => {
 
 // Cancellations are New Business only. Each needs its own Bound policy (quote → policy → cancellation), made from a Model copy;
 // PI_CANCEL_POLICY_URL reuses an existing Bound policy while debugging.
-test.describe('PI - Cancellation', { tag: ['@smoke', '@pi-flow'] }, () => {
-  test('MTA - Mid Term Cancellation and Reinstate Policy', async ({ page }, testInfo) => {
+test.describe('PI - Cancellation', { tag: ['@flow', '@pi-flow'] }, () => {
+  test('MTA - Mid Term Cancellation Policy and Reinstate Policy', async ({ page }, testInfo) => {
     test.setTimeout(20 * 60_000);
-    test.skip(!pi.env('TEMPLATE_QUOTE_URL') && !pi.env('CANCEL_POLICY_URL'), 'PI_TEMPLATE_QUOTE_URL is not set');
-    let cancelPolicyUrl = pi.env('CANCEL_POLICY_URL');
+        let cancelPolicyUrl = pi.env('CANCEL_POLICY_URL');
     if (!cancelPolicyUrl) {
       const policy = await createBoundPolicy(page);
       cancelPolicyUrl = policy.url;
@@ -404,7 +373,7 @@ test.describe('PI - Cancellation', { tag: ['@smoke', '@pi-flow'] }, () => {
       page,
       cancelPolicyUrl,
       piSections.riskSection,
-      piMidTermCancellation,
+      piCancellation,
       pi.env('CANCEL_MTA_URL'),
     );
     console.log(`PI cancellation MTA: ${cancellationUrl}`);

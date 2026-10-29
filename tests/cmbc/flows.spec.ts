@@ -28,7 +28,7 @@ import { recordContract } from '../../src/support/contracts';
 const cmbcPremiumGrossLabel = 'Policy Period Premium Gross of Comm. & Net of IPT';
 let policyUrl = cmbc.env('POLICY_URL');
 
-test.describe.serial('CMBC - Submission, conversion and schedule', { tag: ['@smoke', '@cmbc-flow'] }, () => {
+test.describe.serial('CMBC - Submission and conversion', { tag: ['@flow', '@cmbc-flow'] }, () => {
   let quoteUrl = '';
 
   test('Convert to Quote with PDBI and Liability child sections', async ({ page }, testInfo) => {
@@ -81,11 +81,12 @@ test.describe.serial('CMBC - Submission, conversion and schedule', { tag: ['@smo
   });
 });
 
-test.describe.serial('CMBC - Quote operations', { tag: ['@smoke', '@cmbc-flow'] }, () => {
+test.describe.serial('CMBC - Quote', { tag: ['@flow', '@cmbc-flow'] }, () => {
   let quoteUrl = cmbc.env('QUOTE_URL');
   let quoteReference = '';
 
   test('Create working quote from reference model', async ({ page }, testInfo) => {
+    test.setTimeout(8 * 60_000); // the Model copy opens slowly and its inception date is set before Save
     test.skip(!!quoteUrl, 'CMBC_QUOTE_URL is set');
     const copy = await createCmbcModelCopy(page);
     quoteUrl = copy.url;
@@ -121,7 +122,7 @@ test.describe.serial('CMBC - Quote operations', { tag: ['@smoke', '@cmbc-flow'] 
     testInfo.annotations.push({ type: 'premium', description: JSON.stringify(premium) });
   });
 
-  test('Quote Terms and document upload/download', async ({ page }) => {
+  test('Quote Documents (automatic/manual) - Generation and Download', async ({ page }) => {
     const docs = new QuoteDocumentsPage(page);
     await docs.open(quoteUrl);
     await docs.attachAutomaticTerms();
@@ -131,7 +132,7 @@ test.describe.serial('CMBC - Quote operations', { tag: ['@smoke', '@cmbc-flow'] 
     await docs.expectDownloadedOn(title);
   });
 
-  test('Search / Advance search Quote', async ({ page }) => {
+  test('Search / Advance Search', async ({ page }) => {
     if (!quoteReference) {
       await new QuotePage(page).open(quoteUrl);
       quoteReference = (await page.title()).match(/RSK\d+Q\d+/)![0];
@@ -154,7 +155,7 @@ test.describe.serial('CMBC - Quote operations', { tag: ['@smoke', '@cmbc-flow'] 
     await issueWithSelfApproval(page, quoteUrl, cmbcSections.riskSections[0], cmbcAssignee);
   });
 
-  test('Taken up quote', async ({ page }, testInfo) => {
+  test('Quote Taken up and conversion to Policy', async ({ page }, testInfo) => {
     test.setTimeout(10 * 60_000);
     const policy = await takeUpAndBind(page, quoteUrl, cmbcSections.riskSections[0], 'CMBC Policy');
     policyUrl = policy.url;
@@ -162,15 +163,15 @@ test.describe.serial('CMBC - Quote operations', { tag: ['@smoke', '@cmbc-flow'] 
   });
 
   test.fixme('Requote', async () => {});
-  test.fixme('Multi-Quote', async () => {});
+  test.fixme('MultiQuote', async () => {});
   test.fixme('Documents/datalake payload generation', async () => {});
   test.fixme('Data lake pricing/quote/schedule', async () => {});
   test.fixme('Check ALS and server folder payloads', async () => {});
   test.fixme('Data Lake - Quote/Pricing/MTA/Schedule/ALS', async () => {});
 });
 
-test.describe('CMBC - Policy operations', { tag: ['@smoke', '@cmbc-flow'] }, () => {
-  test('General endorsement through take-up and MTA pricing', async ({ page }) => {
+test.describe('CMBC - Policy', { tag: ['@flow', '@cmbc-flow'] }, () => {
+  test('MTA - GE Pricing and Confirm Endorsement', async ({ page }) => {
     test.setTimeout(18 * 60_000);
     test.skip(!policyUrl && !cmbc.env('ENDORSEMENT_URL'), 'No CMBC policy or endorsement URL is available');
     await endorsePolicy(
@@ -182,7 +183,11 @@ test.describe('CMBC - Policy operations', { tag: ['@smoke', '@cmbc-flow'] }, () 
     );
   });
 
-  test('Renewals - Pricing', async ({ page }) => {
+  test.fixme('MTA - Reversal', async () => {});
+});
+
+test.describe('CMBC - Renewal', { tag: ['@flow', '@cmbc-flow'] }, () => {
+  test('Renewals', async ({ page }) => {
     test.setTimeout(20 * 60_000);
     const basePolicy = await createBoundPolicy(page);
     const policy = new PolicyPage(page);
@@ -194,8 +199,10 @@ test.describe('CMBC - Policy operations', { tag: ['@smoke', '@cmbc-flow'] }, () 
     await issueWithSelfApproval(page, renewal.url, cmbcSections.riskSections[0], cmbcAssignee);
     await takeUpAndBind(page, renewal.url, cmbcSections.riskSections[0], 'CMBC Renewal Policy');
   });
+});
 
-  test('MTA - Mid Term Cancellation Policy - Pricing and Reinstate Policy', async ({ page }) => {
+test.describe('CMBC - Cancellation', { tag: ['@flow', '@cmbc-flow'] }, () => {
+  test('MTA - Mid Term Cancellation Policy and Reinstate Policy', async ({ page }) => {
     test.setTimeout(25 * 60_000);
     const basePolicyUrl = cmbc.env('CANCEL_POLICY_URL') || (await createBoundPolicy(page)).url;
     const cancellationUrl = await cancelPolicyMidTerm(
@@ -208,6 +215,5 @@ test.describe('CMBC - Policy operations', { tag: ['@smoke', '@cmbc-flow'] }, () 
     await reinstatePolicy(page, cancellationUrl, cmbcReinstatement, cmbc.env('REINSTATE_MTA_URL'));
   });
 
-  test.fixme('MTA - Inception Cancellation Policy - Pricing', async () => {});
-  test.fixme('MTA - Reversal', async () => {});
+  test.fixme('MTA - Inception Cancellation Policy', async () => {});
 });
