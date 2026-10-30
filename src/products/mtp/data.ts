@@ -47,6 +47,20 @@ export const mtpSections: MtpSectionData = {
   childSections: ['Business Interruption', 'Property Damage'],
 };
 
+// Liability → Public and Product Liability → Product Liability → EXPOSURE: the Save asks for the import question, Turnover and Trade
+// category (values as on the CMBC reference quote's Product Liability exposure grid)
+export const mtpProductLiability = {
+  section: 'Product Liability',
+  grid: 'PRL Exposure Grid',
+  options: { Turnoverterritory: 'UK', Tradecategory: 'Property developers', 'Selected Product Hazard': 'VL' } as Record<string, string>,
+  values: { 'Turnover ': '120000' } as Record<string, string>,
+  questions: { 'Do you import any manufactured items from outside of the UK?': 'No' } as Record<string, string>,
+};
+
+// Details → Commissions: the commission connector answers "not rated" for the test agency (error 90063) and leaves the Selected %
+// of every section empty, so each empty row is given this value
+export const mtpCommission = { brokerPercent: '12' };
+
 export const mtpScheduleFile = path.resolve(
   mtp.env('SCHEDULE_IMPORT') || path.join(__dirname, '../../../MTP/MTP_Schedule_Import.xlsx'),
 );

@@ -1,5 +1,6 @@
 import { Page, expect } from '@playwright/test';
-import { listActions } from '../../../pages/advantagego/entity';
+import { listActions, saveAcknowledgingWarnings, waitForIdle } from '../../../pages/advantagego/entity';
+import { fieldContainer } from '../../../pages/advantagego/kendo';
 import { NewSubmissionPage } from '../../../pages/advantagego/NewSubmissionPage';
 import { CreatedPolicy, PolicyPage } from '../../../pages/advantagego/PolicyPage';
 import { QuoteDocumentsPage } from '../../../pages/advantagego/QuoteDocumentsPage';
@@ -7,9 +8,8 @@ import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
 import { inceptionDate } from '../../../support/dates';
-import { cmbc } from '..';
 import { CmbcSectionsPage } from '../CmbcSectionsPage';
-import { cmbcAssignee, cmbcQuote, cmbcSections, cmbcSubmission, cmbcSubmissionDetails } from '../data';
+import { cmbcAssignee, cmbcCommission, cmbcQuote, cmbcScheduleFile, cmbcSections, cmbcSubmission, cmbcSubmissionDetails } from '../data';
 
 // How long CMBC waits for generated documents to reach Completed: its documents take several minutes on this host.
 export const cmbcDocumentWait = { retries: 6, delayMs: 20_000 };
@@ -17,18 +17,14 @@ export const cmbcDocumentWait = { retries: 6, delayMs: 20_000 };
 // CMBC's own quote → policy steps. PI (and every other product) has its own copy under src/products/<key>/flows/,
 // so a change to one product's steps never touches another's.
 
-/** ⋮ → Model on the CMBC reference quote: a fresh quote with sections, schedule and exposure already filled in. */
-export async function createCmbcModelCopy(page: Page): Promise<{ reference: string; url: string }> {
-  const template = cmbc.env('TEMPLATE_QUOTE_URL');
-  if (!template) throw new Error('CMBC_TEMPLATE_QUOTE_URL is not set');
-  const copy = await new QuotePage(page).modelCopy(template, { inceptsOn: inceptionDate() });
-  await recordContract('CMBC Quote (Model copy)', copy.reference, copy.url);
-  return copy;
-}
+/**
+ * The CMBC quote every other CMBC quote is copied from: the quote created from the submission in the "CMBC - Quote" chain (or built by
+ * createCmbcModelCopy). There is no fixed reference quote.
+ */
+export const cmbcModel = { url: '' };
 
-export async function createCmbcQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
-  if (cmbc.env('TEMPLATE_QUOTE_URL')) return { submissionId: 0, ...(await createCmbcModelCopy(page)) };
-
+/** New Submission (inception today − 10 days) → Convert to Quote: the bare quote, with no offering or sections yet. */
+export async function createCmbcSubmissionQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
   const newSubmission = new NewSubmissionPage(page);
   await newSubmission.open();
   await newSubmission.fill(cmbcSubmission());
@@ -41,6 +37,87 @@ export async function createCmbcQuote(page: Page): Promise<{ submissionId: numbe
   const quote = await submission.convertToQuote(cmbcQuote);
   await recordContract('CMBC Quote', quote.reference, quote.url);
   return { submissionId: contractId, ...quote };
+}
+
+/**
+ * Quote → Sections: offering, PDBI and Liability with their child sections, the required details and exposures, then the commission
+ * (⋮ → Get Commission, and a Selected % for every section the connector could not rate) and a final Save. Returns the validation text
+ * the first Save listed (what was still missing at that point), for the report.
+ */
+export async function buildCmbcSections(page: Page, quoteUrl: string): Promise<string> {
+  const sections = new CmbcSectionsPage(page);
+  await sections.open(quoteUrl);
+  await sections.selectOffering(cmbcSections.offering);
+  for (const riskSection of cmbcSections.riskSections) {
+    if (!(await page.getByText(riskSection, { exact: true }).first().isVisible())) {
+      const optionName = riskSection === 'LIABILITY' ? 'Liability' : riskSection;
+      await sections.addRiskSection(optionName, { verifyTree: true });
+      if (riskSection === 'PDBI') {
+        await expect(page.getByText('Business Interruption', { exact: true }).first()).toBeVisible({ timeout: 60_000 });
+        await expect(page.getByText('Property Damage', { exact: true }).first()).toBeVisible();
+      }
+    }
+  }
+  await sections.addChildRiskSection('LIABILITY', 'Public and Product Liability');
+  await sections.expectCmbcStructure(cmbcSections);
+  await sections.fillCmbcRequiredDetails(cmbcSections);
+  // With section data complete, the only validation left is the empty commission (Selected %)
+  await sections.saveExpectingValidation();
+  const validation = (await page.locator('text=/Please enter|Error\\(s\\)/').allInnerTexts()).join(' | ');
+
+  // Get Commission and the final Save stay on the Sections page: the sections are only in memory until that Save succeeds
+  const quote = new QuotePage(page);
+  await quote.getCommission();
+  await sections.save();
+  await sections.open(quoteUrl);
+  await sections.expectCmbcStructure(cmbcSections);
+  // Sections the connector could not rate (error 90063) keep an empty Selected %: give them one (Details tab)
+  await quote.open(quoteUrl);
+  await quote.fillEmptyCommissionRates(cmbcCommission.brokerPercent);
+  return validation;
+}
+
+/** A complete CMBC quote built from a submission: sections, commission and the geocoded schedule. Becomes the model (cmbcModel). */
+export async function createCmbcQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
+  const quote = await createCmbcSubmissionQuote(page);
+  await buildCmbcSections(page, quote.url);
+  const sections = new CmbcSectionsPage(page);
+  await sections.open(quote.url);
+  await sections.importCmbcSchedule(cmbcScheduleFile);
+  cmbcModel.url = quote.url;
+  return quote;
+}
+
+/** ⋮ → Model on the model quote (built first when this worker has none): a fresh quote with sections, schedule and exposure already filled in. */
+export async function createCmbcModelCopy(page: Page): Promise<{ reference: string; url: string }> {
+  if (!cmbcModel.url) await createCmbcQuote(page);
+  const copy = await new QuotePage(page).modelCopy(cmbcModel.url, { inceptsOn: inceptionDate() });
+  await recordContract('CMBC Quote (Model copy)', copy.reference, copy.url);
+  return copy;
+}
+
+/**
+ * A renewal quote carries the Commercial Trading Adjustment from the policy it renews and Issue Quote then refuses it
+ * ("CTA rationale field is mandatory"): Details → Premium → Commercial Trading Adjustment Rationale, pick the first reason, Save.
+ * Does nothing when a rationale is already set.
+ */
+export async function fillCtaRationale(page: Page, quoteUrl: string): Promise<void> {
+  await expect(async () => {
+    await page.goto(quoteUrl);
+    await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 30_000 });
+  }).toPass({ timeout: 120_000 });
+  await page.getByText('Premium', { exact: true }).first().click();
+  const rationale = fieldContainer(page, 'Commercial Trading Adjustment Rationale');
+  await rationale.scrollIntoViewIfNeeded();
+  if ((await rationale.locator('input').first().inputValue()).trim()) return;
+  await rationale.locator('.k-input-button').click();
+  const option = page.getByRole('option').first();
+  await expect(option).toBeVisible({ timeout: 15_000 });
+  await option.click();
+  await expect(rationale.locator('input').first()).not.toHaveValue('');
+  await waitForIdle(page);
+  await saveAcknowledgingWarnings(page, async () => (await page.locator('.toast').filter({ hasText: 'Quote Saved' }).count()) > 0, 60_000);
+  await expect(page.locator('.toast').filter({ hasText: 'Quote Saved' }).first()).toBeVisible({ timeout: 30_000 });
 }
 
 /**
@@ -109,7 +186,7 @@ export async function priceQuote(page: Page, quoteUrl: string, { geocodeFirst = 
 
 /**
  * A fresh Bound CMBC policy: Model copy of the reference quote → price → issue (self-approved) → take up.
- * Needs CMBC_TEMPLATE_QUOTE_URL.
+ * Copies the model quote (built from a submission first when this worker has none).
  */
 export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
   const copy = await createCmbcModelCopy(page);

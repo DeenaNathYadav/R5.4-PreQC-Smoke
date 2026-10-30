@@ -50,7 +50,7 @@ export interface ProductConfig {
   useEdgeProfile: boolean;
   /** Most parallel workers the runner gives this product. A product that owns the Edge profile can only run one at a time. */
   maxWorkers?: number;
-  /** Product-scoped env var: `pi.env('TEMPLATE_QUOTE_URL')` reads PI_TEMPLATE_QUOTE_URL ('' when unset). */
+  /** Product-scoped env var: `pi.env('QUOTE_URL')` reads PI_QUOTE_URL ('' when unset). */
   env(name: string): string;
 }
 

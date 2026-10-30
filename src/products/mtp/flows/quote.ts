@@ -1,5 +1,14 @@
 import { Page, expect } from '@playwright/test';
-import { acknowledgeUntil, businessAction, gotoWithMenu, listActions, saveAcknowledgingWarnings, waitForIdle } from '../../../pages/advantagego/entity';
+import {
+  acknowledgeUntil,
+  acknowledgeWarnings,
+  businessAction,
+  clickSave,
+  gotoWithMenu,
+  listActions,
+  saveAcknowledgingWarnings,
+  waitForIdle,
+} from '../../../pages/advantagego/entity';
 import { fieldContainer } from '../../../pages/advantagego/kendo';
 import { NewSubmissionPage } from '../../../pages/advantagego/NewSubmissionPage';
 import { CreatedPolicy, PolicyPage } from '../../../pages/advantagego/PolicyPage';
@@ -8,9 +17,17 @@ import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
 import { inceptionDate } from '../../../support/dates';
-import { mtp } from '..';
 import { MtpSectionsPage } from '../MtpSectionsPage';
-import { mtpAssignee, mtpQuote, mtpSections, mtpSubmission, mtpSubmissionDetails } from '../data';
+import {
+  mtpAssignee,
+  mtpCommission,
+  mtpProductLiability,
+  mtpQuote,
+  mtpScheduleFile,
+  mtpSections,
+  mtpSubmission,
+  mtpSubmissionDetails,
+} from '../data';
 
 // How long MTP waits for generated documents to reach Completed: its documents take several minutes on this host.
 export const mtpDocumentWait = { retries: 6, delayMs: 20_000 };
@@ -18,18 +35,14 @@ export const mtpDocumentWait = { retries: 6, delayMs: 20_000 };
 // MTP's own quote → policy steps. PI (and every other product) has its own copy under src/products/<key>/flows/,
 // so a change to one product's steps never touches another's.
 
-/** ⋮ → Model on the MTP reference quote: a fresh quote with sections, schedule and exposure already filled in. */
-export async function createMtpModelCopy(page: Page): Promise<{ reference: string; url: string }> {
-  const template = mtp.env('TEMPLATE_QUOTE_URL');
-  if (!template) throw new Error('MTP_TEMPLATE_QUOTE_URL is not set');
-  const copy = await new QuotePage(page).modelCopy(template, { inceptsOn: inceptionDate() });
-  await recordContract('MTP Quote (Model copy)', copy.reference, copy.url);
-  return copy;
-}
+/**
+ * The MTP quote every other MTP quote is copied from: the quote created from the submission in the "MTP - Quote" chain (or built by
+ * createMtpModelCopy). There is no fixed reference quote.
+ */
+export const mtpModel = { url: '' };
 
-export async function createMtpQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
-  if (mtp.env('TEMPLATE_QUOTE_URL')) return { submissionId: 0, ...(await createMtpModelCopy(page)) };
-
+/** New Submission (inception today − 10 days) → Convert to Quote: the bare quote, with no risk sections yet. */
+export async function createMtpSubmissionQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
   const newSubmission = new NewSubmissionPage(page);
   await newSubmission.open();
   await newSubmission.fill(mtpSubmission());
@@ -42,6 +55,60 @@ export async function createMtpQuote(page: Page): Promise<{ submissionId: number
   const quote = await submission.convertToQuote(mtpQuote);
   await recordContract('MTP Quote', quote.reference, quote.url);
   return { submissionId: contractId, ...quote };
+}
+
+/**
+ * Quote → Sections: the offering is defaulted (SME) but the risk sections are not, so PDBI, Liability, Road Risks and Legal Expenses
+ * are added; then the commission (⋮ → Get Commission, and a Selected % for every section the connector could not rate).
+ * The section details the rating engine still asks for (cover, driver basis, product liability turnover …) are NOT filled here yet:
+ * the validation text the Save lists is returned so the report shows what is missing.
+ */
+export async function buildMtpSections(page: Page, quoteUrl: string): Promise<string> {
+  const sections = new MtpSectionsPage(page);
+  await sections.open(quoteUrl);
+  await sections.selectOffering(mtpSections.offering);
+  await sections.addMtpRiskSections(mtpSections);
+  await sections.expectMtpStructure(mtpSections);
+  await sections.fillMtpRequiredDetails(mtpProductLiability);
+  await sections.saveExpectingValidation();
+  const validation = (await page.locator('text=/Please enter|is mandatory|Error\\(s\\)/').allInnerTexts()).join(' | ');
+
+  // Get Commission stays on the Sections page (the sections are only in memory until saved)
+  const quote = new QuotePage(page);
+  await quote.getCommission();
+  // The sections that could not be rated (error 90063) keep an empty Selected %: fill them on the Details tab and come back. The tabs
+  // are switched inside the app (no page load) so the unsaved sections stay in memory.
+  await page.getByRole('button', { name: 'Details', exact: true }).first().click();
+  await quote.fillEmptyCommissionRates(mtpCommission.brokerPercent);
+  await page.getByRole('button', { name: 'Sections', exact: true }).first().click();
+  // Save, then prove it by reopening the quote: the "Quote Saved" toast is easy to miss, the sections in the tree are not
+  await clickSave(page);
+  await acknowledgeWarnings(page, 8_000);
+  await waitForIdle(page);
+  const afterSave = (await page.locator('text=/Please enter|is mandatory|Error\(s\)/').allInnerTexts()).join(' | ');
+  await sections.open(quoteUrl);
+  await expect(page.getByText('PDBI', { exact: true }).first(), `risk sections were not saved; the Save listed: ${afterSave || 'nothing'}`).toBeVisible({ timeout: 30_000 });
+  await sections.expectMtpStructure(mtpSections);
+  return validation;
+}
+
+/** A complete MTP quote built from a submission: sections, commission and the geocoded schedule. Becomes the model (mtpModel). */
+export async function createMtpQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
+  const quote = await createMtpSubmissionQuote(page);
+  await buildMtpSections(page, quote.url);
+  const sections = new MtpSectionsPage(page);
+  await sections.open(quote.url);
+  await sections.importMtpSchedule(mtpScheduleFile);
+  mtpModel.url = quote.url;
+  return quote;
+}
+
+/** ⋮ → Model on the model quote (built first when this worker has none): a fresh quote with sections, schedule and exposure already filled in. */
+export async function createMtpModelCopy(page: Page): Promise<{ reference: string; url: string }> {
+  if (!mtpModel.url) await createMtpQuote(page);
+  const copy = await new QuotePage(page).modelCopy(mtpModel.url, { inceptsOn: inceptionDate() });
+  await recordContract('MTP Quote (Model copy)', copy.reference, copy.url);
+  return copy;
 }
 
 /**
@@ -152,8 +219,8 @@ export async function fillCtaRationale(page: Page, quoteUrl: string): Promise<vo
 }
 
 /**
- * A fresh Bound MTP policy: Model copy of the reference quote → price → issue (self-approved) → take up.
- * Needs MTP_TEMPLATE_QUOTE_URL.
+ * A fresh Bound MTP policy: Model copy of the model quote → price → issue (self-approved) → take up.
+ * Copies the model quote (built from a submission first when this worker has none).
  */
 export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
   const copy = await createMtpModelCopy(page);

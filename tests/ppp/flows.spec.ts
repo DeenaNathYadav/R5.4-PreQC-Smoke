@@ -2,7 +2,15 @@ import fs from 'fs';
 import type { Page } from '@playwright/test';
 import { test, expect } from '../../src/fixtures';
 import { cancelPolicyMidTerm, endorsePolicy, reinstatePolicy, reverseEndorsement } from '../../src/products/ppp/flows/policy';
-import { createBoundPolicy, createPppModelCopy, issueWithSelfApproval, priceQuote, takeUpAndBind } from '../../src/products/ppp/flows/quote';
+import {
+  createBoundPolicy,
+  createPppModelCopy,
+  createPppSubmissionQuote,
+  issueWithSelfApproval,
+  pppModel,
+  priceQuote,
+  takeUpAndBind,
+} from '../../src/products/ppp/flows/quote';
 import { ppp } from '../../src/products/ppp';
 import { PppSectionsPage } from '../../src/products/ppp/PppSectionsPage';
 import {
@@ -30,32 +38,10 @@ import { SubmissionPage } from '../../src/pages/advantagego/SubmissionPage';
 import { recordContract } from '../../src/support/contracts';
 
 // One test per row of the "PPP-Module" sheet in "AXA R5.4 - CMBC-MTP-Fleet Smoke (1).xlsx".
-// Working quotes are ⋮ → Model copies of the PPP reference quote (PPP_TEMPLATE_QUOTE_URL): the PPP risk section, its covers and
-// the Broker Commission row are already on them. test.fixme = backend evidence, not automated.
+// The first quote is created from a submission (inception today − 10 days) and built up in the "PPP - Quote" chain; every other PPP
+// quote is a ⋮ → Model copy of it (there is no fixed reference quote). test.fixme = backend evidence, not automated.
 const pppPremiumGrossLabel = 'Policy Period Premium Gross of Comm. & Net of IPT';
-const template = ppp.env('TEMPLATE_QUOTE_URL');
 let policyUrl = ppp.env('POLICY_URL');
-
-// Own describe: a flaky page render here must not skip the chain below
-test.describe('PPP - Submission and conversion', { tag: ['@flow', '@ppp-flow'] }, () => {
-  // New Submission → Convert to Quote (own quote, not used by the later steps)
-  test('Convert to Quote', async ({ page }, testInfo) => {
-    test.setTimeout(8 * 60_000);
-    const newSubmission = new NewSubmissionPage(page);
-    await newSubmission.open();
-    await newSubmission.fill(pppSubmission());
-    const submission = await newSubmission.submit();
-    await recordContract('PPP Submission', submission.reference, `/ui/Submission/Edit/${submission.contractId}`);
-
-    const submissionPage = new SubmissionPage(page);
-    await submissionPage.open(submission.contractId);
-    await submissionPage.completeDetails(pppSubmissionDetails);
-    const quote = await submissionPage.convertToQuote(pppQuote);
-    await recordContract('PPP Quote', quote.reference, quote.url);
-    testInfo.annotations.push({ type: 'quote', description: quote.reference });
-    expect(quote.reference).toMatch(/^RSK\d+Q001$/);
-  });
-});
 
 test.describe.serial('PPP - Quote', { tag: ['@flow', '@ppp-flow'] }, () => {
   let quoteUrl = ppp.env('QUOTE_URL');
@@ -67,14 +53,24 @@ test.describe.serial('PPP - Quote', { tag: ['@flow', '@ppp-flow'] }, () => {
     quoteReference = (await page.title()).match(/RSK\d+Q\d+/)![0];
   };
 
-  test('Create working quote from reference model', async ({ page }, testInfo) => {
-    test.setTimeout(8 * 60_000); // the Model copy opens slowly and its inception date is set before Save
+  // New Submission (inception today − 10 days) → Convert to Quote: the quote the rest of the chain works on, and the model the other
+  // PPP quotes are copied from
+  test('Convert to Quote', async ({ page }, testInfo) => {
+    test.setTimeout(8 * 60_000);
     test.skip(!!quoteUrl, 'PPP_QUOTE_URL is set');
-    test.skip(!template, 'PPP_TEMPLATE_QUOTE_URL is not set');
-    const copy = await createPppModelCopy(page);
-    quoteUrl = copy.url;
-    quoteReference = copy.reference;
-    testInfo.annotations.push({ type: 'quote', description: copy.reference });
+    const quote = await createPppSubmissionQuote(page);
+    quoteUrl = quote.url;
+    quoteReference = quote.reference;
+    testInfo.annotations.push({ type: 'quote', description: quote.reference });
+    expect(quote.reference).toMatch(/^RSK\d+Q001$/);
+  });
+
+  // Offering (the first one listed) → PPP risk section; Save lists what the covers still need
+  test('Add PPP risk section and covers', async ({ page }, testInfo) => {
+    test.setTimeout(8 * 60_000);
+    const { offering, validation } = await new PppSectionsPage(page).addPppSections(quoteUrl, pppSections, pppCommission.brokerPercent);
+    testInfo.annotations.push({ type: 'offering', description: offering });
+    testInfo.annotations.push({ type: 'section validation', description: validation });
   });
 
   test('Insert schedule with geocoding and peril score', async ({ page }) => {
@@ -89,8 +85,9 @@ test.describe.serial('PPP - Quote', { tag: ['@flow', '@ppp-flow'] }, () => {
   test('Add Broker Commission', async ({ page }) => {
     const quote = new QuotePage(page);
     await quote.open(quoteUrl);
-    await quote.addBrokerCommission(pppCommission.brokerPercent, { requireDefaultRow: true });
+    await quote.addBrokerCommission(pppCommission.brokerPercent); // existing Broker Commission row → its %, otherwise a row is added with +
     await quote.expectBrokerCommission();
+    pppModel.url = quoteUrl; // sections, schedule and commission are on it now: the model the other PPP quotes are copied from
   });
 
   test('Get Pricing', async ({ page }, testInfo) => {
@@ -209,7 +206,6 @@ test.describe.serial('PPP - Quote', { tag: ['@flow', '@ppp-flow'] }, () => {
 test.describe('PPP - Quote lifecycle', { tag: ['@flow', '@ppp-flow'] }, () => {
   test('Decline / Not Taken up / Mark as Lost', async ({ page }) => {
     test.setTimeout(10 * 60_000);
-    test.skip(!template, 'PPP_TEMPLATE_QUOTE_URL is not set');
     const copy = await createPppModelCopy(page);
     const quote = new QuotePage(page);
     await quote.open(copy.url);
@@ -240,7 +236,6 @@ test.describe.serial('PPP - Policy', { tag: ['@flow', '@ppp-flow'] }, () => {
 test.describe('PPP - Cancellation', { tag: ['@flow', '@ppp-flow'] }, () => {
   test('MTA - Mid Term Cancellation Policy and Reinstate Policy', async ({ page }) => {
     test.setTimeout(25 * 60_000);
-    test.skip(!template && !ppp.env('CANCEL_POLICY_URL'), 'PPP_TEMPLATE_QUOTE_URL is not set');
     const basePolicyUrl = ppp.env('CANCEL_POLICY_URL') || (await createBoundPolicy(page)).url;
     const cancellationUrl = await cancelPolicyMidTerm(page, basePolicyUrl, pppSections.riskSection, pppCancellation, ppp.env('CANCEL_MTA_URL'));
     await reinstatePolicy(page, cancellationUrl, pppReinstatement, ppp.env('REINSTATE_MTA_URL'));
@@ -252,7 +247,6 @@ test.describe('PPP - Renewal', { tag: ['@flow', '@ppp-flow'] }, () => {
   // PPP_RENEWAL_BASE_POLICY_URL reuses a Bound policy; PPP_RENEWAL_QUOTE_URL carries on from an existing renewal quote.
   test('Renewals', async ({ page }) => {
     test.setTimeout(25 * 60_000);
-    test.skip(!template && !ppp.env('RENEWAL_BASE_POLICY_URL') && !ppp.env('RENEWAL_QUOTE_URL'), 'PPP_TEMPLATE_QUOTE_URL is not set');
     let renewalUrl = ppp.env('RENEWAL_QUOTE_URL');
     if (!renewalUrl) {
       const basePolicyUrl = ppp.env('RENEWAL_BASE_POLICY_URL') || (await createBoundPolicy(page)).url;

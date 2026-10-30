@@ -19,14 +19,18 @@ export function field(page: Page, label: string): Locator {
 /** Types into a Kendo autocomplete and picks the suggestion whose text ends with `option`. */
 export async function selectAutocomplete(page: Page, label: string, search: string, option = search): Promise<void> {
   const input = field(page, label);
-  await input.click();
-  await input.fill('');
-  await input.pressSequentially(search, { delay: 50 });
-  await page
+  const suggestion = page
     .getByRole('option')
     .filter({ hasText: new RegExp(`${escapeRegExp(option)}\\s*$`) })
-    .first()
-    .click();
+    .first();
+  // The suggestion list is loaded from the API and sometimes stays empty: type it again
+  await expect(async () => {
+    await input.click();
+    await input.fill('');
+    await input.pressSequentially(search, { delay: 50 });
+    await expect(suggestion).toBeVisible({ timeout: 12_000 });
+  }).toPass({ timeout: 90_000, intervals: [2_000] });
+  await suggestion.click();
   await expect(input).toHaveValue(new RegExp(escapeRegExp(option)));
 }
 

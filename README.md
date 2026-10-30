@@ -271,7 +271,7 @@ flowchart LR
 ### 🚗 MTP (Motor Trade) — `tests/mtp/flows.spec.ts`
 
 Own folder `src/products/mtp/` (data, `MtpSectionsPage`, `flows/quote.ts`, `flows/policy.ts`); it shares only the low-level pages with the other products.
-Env: `MTP_URL`, `MTP_TEMPLATE_QUOTE_URL` (reference quote RSK0003740201Q001, Taken Up), `MTP_SCHEDULE_IMPORT`, plus the `MTP_*` resume URLs.
+Env: `MTP_URL`, `MTP_SCHEDULE_IMPORT`, plus the `MTP_*` resume URLs.
 
 | Checklist row | Status | Notes |
 |:--|:--:|:--|
@@ -293,7 +293,7 @@ Env: `MTP_URL`, `MTP_TEMPLATE_QUOTE_URL` (reference quote RSK0003740201Q001, Tak
 
 ### 🏘️ PPP (UK Property Investors Protection Plan) — `tests/ppp/flows.spec.ts`
 
-Own folder `src/products/ppp/` (data, `PppSectionsPage`, `flows/quote.ts`, `flows/policy.ts`). Env: `PPP_URL`, `PPP_TEMPLATE_QUOTE_URL` (reference quote RSK0003740401Q001, Taken Up), `PPP_SCHEDULE_IMPORT`, plus the `PPP_*` resume URLs.
+Own folder `src/products/ppp/` (data, `PppSectionsPage`, `flows/quote.ts`, `flows/policy.ts`). Env: `PPP_URL`, `PPP_SCHEDULE_IMPORT`, plus the `PPP_*` resume URLs.
 
 | Checklist row | Status | Notes |
 |:--|:--:|:--|
@@ -320,6 +320,7 @@ Own folder `src/products/fleet/` (data, `FleetSectionsPage`, `flows/quote.ts`, `
 
 ## 📐 Conventions (all five products)
 
+- **No fixed reference quote** in any product: the quote created from the submission in each product's `<Product> - Quote` chain is the model, and every other quote of that product is a ⋮ → Model copy of it (built first when a worker has none).
 - **Inception date** = today − 10 days, for every new submission and every Model-copy quote (`src/support/dates.ts`). A General Endorsement
   (Effective From = inception + 10 days) therefore starts today.
 - **Mid-Term Cancellation** takes effect **today** (`effectiveFrom` in each product's cancellation data).
@@ -342,7 +343,6 @@ A full PI run takes ~25 minutes and a **session can expire mid-run**. Rather tha
 
 | Variable | Resumes… |
 |:--|:--|
-| `PI_TEMPLATE_QUOTE_URL` | **Faster runs**: an *issued* quote copied with ⋮ → Model instead of New Submission → Convert. Unset it to exercise Create Submission / Convert / Pricing / Commission from scratch |
 | `PI_QUOTE_URL` | quote-level steps alone on an existing quote (e.g. `-g "Get Pricing"`) |
 | `PI_POLICY_URL` | the policy rows (endorsement, reversal…) on an existing **Bound** policy |
 | `PI_ENDORSEMENT_URL` · `PI_ENDORSED_POLICY_URL` | an endorsement already started / finished (one endorsement per policy at a time) |
@@ -436,7 +436,7 @@ flowchart TB
    That alone turns on the generic page checks, and `npm run smoke:<key>` / `--products <key>` start working.
 4. **Flows** — keep them *all inside the product's folder*: test data in `data.ts`, steps in `flows/quote.ts` and `flows/policy.ts`,
    product-specific page objects next to them (extend `QuoteSectionsPage`), specs in `tests/<key>/flows.spec.ts`.
-   Copy PI's or CMBC's `flows/` as the starting point and change it freely. Read product settings with `<product>.env('TEMPLATE_QUOTE_URL')`.
+   Copy PI's or CMBC's `flows/` as the starting point and change it freely. Read product settings with `<product>.env('<NAME>')`.
 
 <details>
 <summary><b>➕ Adding a page check (no code)</b></summary>

@@ -8,9 +8,8 @@ import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
 import { inceptionDate } from '../../../support/dates';
-import { ppp } from '..';
 import { PppSectionsPage } from '../PppSectionsPage';
-import { pppAssignee, pppQuote, pppSections, pppSubmission, pppSubmissionDetails } from '../data';
+import { pppAssignee, pppCommission, pppQuote, pppScheduleFile, pppSections, pppSubmission, pppSubmissionDetails } from '../data';
 
 // How long PPP waits for generated documents to reach Completed: its documents take several minutes on this host.
 export const pppDocumentWait = { retries: 6, delayMs: 20_000 };
@@ -18,18 +17,14 @@ export const pppDocumentWait = { retries: 6, delayMs: 20_000 };
 // PPP's own quote → policy steps. PI (and every other product) has its own copy under src/products/<key>/flows/,
 // so a change to one product's steps never touches another's.
 
-/** ⋮ → Model on the PPP reference quote: a fresh quote with sections, schedule and exposure already filled in. */
-export async function createPppModelCopy(page: Page): Promise<{ reference: string; url: string }> {
-  const template = ppp.env('TEMPLATE_QUOTE_URL');
-  if (!template) throw new Error('PPP_TEMPLATE_QUOTE_URL is not set');
-  const copy = await new QuotePage(page).modelCopy(template, { inceptsOn: inceptionDate() });
-  await recordContract('PPP Quote (Model copy)', copy.reference, copy.url);
-  return copy;
-}
+/**
+ * The PPP quote every other PPP quote is copied from: the quote created from the submission in the "PPP - Quote" chain (or built by
+ * createPppModelCopy). There is no fixed reference quote.
+ */
+export const pppModel = { url: '' };
 
-export async function createPppQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
-  if (ppp.env('TEMPLATE_QUOTE_URL')) return { submissionId: 0, ...(await createPppModelCopy(page)) };
-
+/** New Submission (inception today − 10 days) → Convert to Quote: the bare quote, with no offering or risk section yet. */
+export async function createPppSubmissionQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
   const newSubmission = new NewSubmissionPage(page);
   await newSubmission.open();
   await newSubmission.fill(pppSubmission());
@@ -42,6 +37,28 @@ export async function createPppQuote(page: Page): Promise<{ submissionId: number
   const quote = await submission.convertToQuote(pppQuote);
   await recordContract('PPP Quote', quote.reference, quote.url);
   return { submissionId: contractId, ...quote };
+}
+
+/**
+ * A complete PPP quote built from a submission: offering + PPP risk section, the Broker Commission override and the geocoded schedule.
+ * Becomes the model (pppModel). The covers the rating engine asks for are not selected here yet: the first run lists them.
+ */
+export async function createPppQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
+  const quote = await createPppSubmissionQuote(page);
+  const sections = new PppSectionsPage(page);
+  await sections.addPppSections(quote.url, pppSections, pppCommission.brokerPercent);
+  await sections.open(quote.url);
+  await sections.importPppSchedule(pppScheduleFile);
+  pppModel.url = quote.url;
+  return quote;
+}
+
+/** ⋮ → Model on the model quote (built first when this worker has none): a fresh quote with sections, schedule and exposure already filled in. */
+export async function createPppModelCopy(page: Page): Promise<{ reference: string; url: string }> {
+  if (!pppModel.url) await createPppQuote(page);
+  const copy = await new QuotePage(page).modelCopy(pppModel.url, { inceptsOn: inceptionDate() });
+  await recordContract('PPP Quote (Model copy)', copy.reference, copy.url);
+  return copy;
 }
 
 /**
@@ -155,7 +172,7 @@ export async function fillCtaRationale(page: Page, quoteUrl: string): Promise<vo
 
 /**
  * A fresh Bound PPP policy: Model copy of the reference quote → price → issue (self-approved) → take up.
- * Needs PPP_TEMPLATE_QUOTE_URL.
+ * Copies the model quote (built from a submission first when this worker has none).
  */
 export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
   const copy = await createPppModelCopy(page);

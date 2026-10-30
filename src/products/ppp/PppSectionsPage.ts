@@ -1,10 +1,69 @@
 import { expect } from '@playwright/test';
 import path from 'path';
-import { clickSave, expectToast, waitForIdle } from '../../pages/advantagego/entity';
-import { QuoteSectionsPage } from '../../pages/advantagego/QuoteSectionsPage';
+import { acknowledgeWarnings, clickSave, expectToast, waitForIdle } from '../../pages/advantagego/entity';
+import { QuotePage } from '../../pages/advantagego/QuotePage';
+import { QuoteSectionsPage, quoteId } from '../../pages/advantagego/QuoteSectionsPage';
 
-/** Quote → SECTIONS for PPP (UK Property Investors Protection Plan). The PPP risk section and its covers come from the template quote. */
+/** Quote → SECTIONS for PPP (UK Property Investors Protection Plan). */
 export class PppSectionsPage extends QuoteSectionsPage {
+  /** Chooses an offering; changing it asks "retain common data between the old and new offerings?" (Do not Retain). */
+  private async chooseOffering(name: string): Promise<void> {
+    const { page } = this;
+    const input = page.locator('input[placeholder="Offering:"], input[placeholder="Select"]').first();
+    await input.locator('xpath=ancestor::kendo-combobox[1]').locator('.k-input-button').click();
+    await page.getByRole('option', { name, exact: true }).click();
+    const retain = page.getByRole('dialog').filter({ hasText: 'retain common data' });
+    if (await retain.waitFor({ state: 'visible', timeout: 6_000 }).then(() => true, () => false)) {
+      await retain.getByRole('button', { name: /Do not Retain/i }).click();
+    }
+    await expect(input).toHaveValue(name);
+    await waitForIdle(page);
+    await page.waitForTimeout(3_000);
+  }
+
+  /**
+   * A quote converted from a submission shows the offering "Standard PPP" already but has no risk sections: they default only when the
+   * offering is changed, so another offering is chosen and then "Standard PPP" again (PPP with Risk Details, Property Damage, Rental
+   * Income, Public Liability and Additional Covers appear). The Broker Commission row's Override % is then set on the Details tab
+   * (switching tabs inside the app keeps the unsaved sections) and the quote is saved; the sections are proven by reopening it.
+   * Returns the offering and the validation text the first Save listed.
+   */
+  async addPppSections(
+    quoteUrl: string,
+    data: { riskSection: string; offering: string; otherOffering: string },
+    brokerPercent: string,
+  ): Promise<{ offering: string; validation: string }> {
+    const { page } = this;
+    await expect(async () => {
+      await page.goto(`/ui/Quote/Section/${quoteId(quoteUrl)}`);
+      await expect(page.getByText('Offering:')).toBeVisible({ timeout: 30_000 });
+    }).toPass({ timeout: 150_000, intervals: [2_000] });
+    const input = page.locator('input[placeholder="Offering:"], input[placeholder="Select"]').first();
+    const node = page.locator('span.k-treeview-leaf').filter({ has: page.getByText(data.riskSection, { exact: true }) }).first();
+
+    if (!(await node.isVisible())) {
+      if ((await input.inputValue()).trim() === data.offering) await this.chooseOffering(data.otherOffering);
+      await this.chooseOffering(data.offering);
+    }
+    if (!(await node.isVisible())) await this.addRiskSection(data.riskSection, { verifyTree: true }); // not defaulted: add it
+    await expect(node).toBeVisible({ timeout: 60_000 });
+    const offering = await input.inputValue();
+
+    await this.saveExpectingValidation();
+    const validation = (await page.locator('text=/Please enter|is required|Please select|Error\\(s\\)/').allInnerTexts()).join(' | ');
+
+    await page.getByRole('button', { name: 'Details', exact: true }).first().click();
+    await new QuotePage(page).addBrokerCommission(brokerPercent);
+    await page.getByRole('button', { name: 'Sections', exact: true }).first().click();
+    await clickSave(page);
+    await acknowledgeWarnings(page, 8_000);
+    await waitForIdle(page);
+    const afterSave = (await page.locator('text=/Please enter|is required|Please select|Error\\(s\\)/').allInnerTexts()).join(' | ');
+    await this.open(quoteUrl);
+    await expect(node, `risk sections were not saved; the Save listed: ${afterSave || 'nothing'}`).toBeVisible({ timeout: 30_000 });
+    return { offering, validation };
+  }
+
   /** Quote → PPP → SCHEDULE: the schedule grid header (titled "PPPV2") (Import/Delete/⋮ buttons live here). */
   private async openPppSchedule() {
     const { page } = this;

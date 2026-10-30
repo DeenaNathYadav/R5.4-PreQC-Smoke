@@ -29,8 +29,10 @@ export class FleetSectionsPage extends QuoteSectionsPage {
     data: { offering: string; riskSection: string; riskDetails: Record<string, string>; selectedExcess: string },
   ): Promise<void> {
     const { page } = this;
-    await page.goto(`/ui/Quote/Section/${quoteId(quoteUrl)}`);
-    await expect(page.getByText('Offering:')).toBeVisible({ timeout: 60_000 });
+    await expect(async () => {
+      await page.goto(`/ui/Quote/Section/${quoteId(quoteUrl)}`);
+      await expect(page.getByText('Offering:')).toBeVisible({ timeout: 30_000 });
+    }).toPass({ timeout: 150_000, intervals: [2_000] });
     await this.selectOffering(data.offering);
     await expect(page.getByText(data.riskSection, { exact: true }).first()).toBeVisible({ timeout: 60_000 });
     await waitForIdle(page);

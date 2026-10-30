@@ -1,6 +1,8 @@
 import { expect } from '@playwright/test';
 import path from 'path';
+import { EditableGrid } from '../../pages/advantagego/agGrid';
 import { clickSave, expectToast, waitForIdle } from '../../pages/advantagego/entity';
+import { selectDropdown } from '../../pages/advantagego/kendo';
 import { QuoteSectionsPage, escapeRegExp } from '../../pages/advantagego/QuoteSectionsPage';
 
 /** Get Price answered "The Geocoding for all schedule items have not been done" instead of a price. */
@@ -59,6 +61,78 @@ export class MtpSectionsPage extends QuoteSectionsPage {
     await this.geocodeAndGetPerilScore();
     await this.getPrice(riskSections);
     return true;
+  }
+
+  /** Picks the first option of a dropdown whose label carries a required "*" (so the exact-label helpers do not match it). */
+  private async selectFirstOption(label: string): Promise<string> {
+    const { page } = this;
+    const container = page
+      .locator(`xpath=//main//label[starts-with(normalize-space(translate(., ' ', ' ')), "${label}")]/ancestor::div[.//input][1]`)
+      .first();
+    await container.scrollIntoViewIfNeeded();
+    const input = container.locator('input').first();
+    if ((await input.inputValue()).trim()) return input.inputValue();
+    const first = page.getByRole('option').first();
+    await expect(async () => {
+      if (!(await first.isVisible())) await container.locator('.k-input-button').click();
+      await expect(first).toBeVisible({ timeout: 5_000 });
+    }).toPass({ timeout: 40_000 });
+    await first.click();
+    await expect(input).not.toHaveValue('');
+    return input.inputValue();
+  }
+
+  /**
+   * The section details the first Save asks for: Road Risks → Cover and Driver Basis (the first option of each), and the Product
+   * Liability exposure (import question, Turnover, Trade category).
+   */
+  async fillMtpRequiredDetails(liability: {
+    section: string;
+    grid: string;
+    options: Record<string, string>;
+    values: Record<string, string>;
+    questions: Record<string, string>;
+  }): Promise<void> {
+    const { page } = this;
+    await page.getByText('ROAD RISKS', { exact: true }).first().click();
+    await this.selectFirstOption('Cover');
+    await this.selectFirstOption('Driver Basis');
+
+    const ppl = page.getByText('Public and Product Liability', { exact: true }).first();
+    const node = page.getByText(liability.section, { exact: true }).first();
+    if (!(await node.isVisible())) {
+      await page.getByText('LIABILITY', { exact: true }).first().click();
+      await ppl.click();
+      if (!(await node.waitFor({ timeout: 10_000 }).then(() => true, () => false))) {
+        // Expand the node via its ⊕ toggle
+        await page.locator('li[role=treeitem]').filter({ has: ppl }).first().locator('.k-treeview-toggle').first().click();
+      }
+    }
+    await node.click();
+    await page.getByText('EXPOSURE', { exact: true }).first().click();
+
+    const grid = new EditableGrid(page, liability.grid);
+    await expect(grid.root).toBeVisible({ timeout: 30_000 });
+    if ((await grid.rows().count()) === 0) await grid.addRow();
+    for (const [colId, option] of Object.entries(liability.options)) {
+      // Trade category / hazard are derived from the territory and the trade code, so give them a moment to auto-fill
+      const expected = new RegExp(`^\\s*${escapeRegExp(option)}`);
+      if (await expect(grid.cell(0, colId)).toHaveText(expected, { timeout: 5_000 }).then(() => true, () => false)) continue;
+      // The wanted option is used when this product's list has it, otherwise the first option on offer (the lists differ per product)
+      const cell = grid.cell(0, colId);
+      await cell.dblclick();
+      const any = page.getByRole('option').first();
+      await expect(any).toBeVisible({ timeout: 15_000 });
+      const wanted = page.getByRole('option').filter({ hasText: new RegExp(`^\\s*${escapeRegExp(option)}(\\s|$)`) }).first();
+      await ((await wanted.isVisible()) ? wanted : any).click();
+      await page.keyboard.press('Tab'); // commits the editor
+      await expect(cell).not.toHaveText('');
+    }
+    for (const [colId, value] of Object.entries(liability.values)) {
+      await grid.setText(0, colId, value);
+      await expect(grid.cell(0, colId)).toHaveText(Number(value).toLocaleString('en-GB'));
+    }
+    for (const [label, option] of Object.entries(liability.questions)) await selectDropdown(page, label, option);
   }
 
   /** Adds every risk section that is not in the tree yet (the product defaults the offering but not the sections). */

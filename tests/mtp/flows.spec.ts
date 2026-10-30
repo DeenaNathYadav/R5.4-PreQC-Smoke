@@ -2,67 +2,38 @@ import fs from 'fs';
 import type { Page } from '@playwright/test';
 import { test, expect } from '../../src/fixtures';
 import { cancelPolicyAtInception, cancelPolicyMidTerm, endorsePolicy, reinstatePolicy, reverseEndorsement } from '../../src/products/mtp/flows/policy';
-import { createBoundPolicy, createMtpModelCopy, fillCtaRationale, issueWithSelfApproval, priceQuote, takeUpAndBind } from '../../src/products/mtp/flows/quote';
+import {
+  buildMtpSections,
+  createBoundPolicy,
+  createMtpSubmissionQuote,
+  fillCtaRationale,
+  issueWithSelfApproval,
+  mtpModel,
+  priceQuote,
+  takeUpAndBind,
+} from '../../src/products/mtp/flows/quote';
 import { mtp } from '../../src/products/mtp';
 import { MtpSectionsPage } from '../../src/products/mtp/MtpSectionsPage';
 import {
   mtpAssignee,
   mtpCancellation,
+  mtpCommission,
   mtpDocument,
   mtpEndorsement,
   mtpInceptionCancellation,
-  mtpQuote,
   mtpReinstatement,
   mtpScheduleFile,
   mtpSections,
-  mtpSubmission,
-  mtpSubmissionDetails,
 } from '../../src/products/mtp/data';
-import { NewSubmissionPage } from '../../src/pages/advantagego/NewSubmissionPage';
 import { PolicyPage } from '../../src/pages/advantagego/PolicyPage';
 import { QuoteDocumentsPage } from '../../src/pages/advantagego/QuoteDocumentsPage';
 import { QuotePage } from '../../src/pages/advantagego/QuotePage';
 import { readPremium } from '../../src/pages/advantagego/QuoteSectionsPage';
 import { SearchPage } from '../../src/pages/advantagego/SearchPage';
-import { SubmissionPage } from '../../src/pages/advantagego/SubmissionPage';
 import { recordContract } from '../../src/support/contracts';
 
 const mtpPremiumGrossLabel = 'Policy Period Premium Gross of Comm. & Net of IPT';
 let policyUrl = mtp.env('POLICY_URL');
-
-test.describe.serial('MTP - Submission and conversion', { tag: ['@flow', '@mtp-flow'] }, () => {
-  test('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses', async ({ page }, testInfo) => {
-    test.setTimeout(12 * 60_000);
-    const newSubmission = new NewSubmissionPage(page);
-    await newSubmission.open();
-    await newSubmission.fill(mtpSubmission());
-    const submission = await newSubmission.submit();
-    await recordContract('MTP Submission', submission.reference, `/ui/Submission/Edit/${submission.contractId}`);
-
-    const submissionPage = new SubmissionPage(page);
-    await submissionPage.open(submission.contractId);
-    await submissionPage.completeDetails(mtpSubmissionDetails);
-    const quote = await submissionPage.convertToQuote(mtpQuote);
-    await recordContract('MTP Quote', quote.reference, quote.url);
-    testInfo.annotations.push({ type: 'quote', description: quote.reference });
-
-    // The offering is defaulted (SME) but the risk sections are not: add them
-    const sections = new MtpSectionsPage(page);
-    await sections.open(quote.url);
-    await sections.selectOffering(mtpSections.offering);
-    await sections.addMtpRiskSections(mtpSections);
-    await sections.expectMtpStructure(mtpSections);
-    // Section details (cover, driver basis, product liability turnover …) and commission are still missing: validation lists them
-    await sections.saveExpectingValidation();
-    testInfo.annotations.push({
-      type: 'section validation',
-      description: (await page.locator('text=/Please enter|is mandatory|Error\\(s\\)/').allInnerTexts()).join(' | '),
-    });
-
-    const rejected = await new QuotePage(page).getCommission();
-    if (rejected.length) testInfo.annotations.push({ type: 'commission not rated', description: rejected.join(', ') });
-  });
-});
 
 test.describe.serial('MTP - Quote', { tag: ['@flow', '@mtp-flow'] }, () => {
   let quoteUrl = mtp.env('QUOTE_URL');
@@ -73,13 +44,17 @@ test.describe.serial('MTP - Quote', { tag: ['@flow', '@mtp-flow'] }, () => {
     quoteReference = (await page.title()).match(/RSK\d+Q\d+/)![0];
   };
 
-  test('Create working quote from reference model', async ({ page }, testInfo) => {
-    test.setTimeout(8 * 60_000); // the Model copy opens slowly and its inception date is set before Save
+  // New Submission (inception today − 10 days) → Convert to Quote → PDBI, Liability, Road Risks and Legal Expenses → commission: the
+  // quote the rest of the chain works on, and the model the other MTP quotes are copied from
+  test('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses', async ({ page }, testInfo) => {
+    test.setTimeout(15 * 60_000);
     test.skip(!!quoteUrl, 'MTP_QUOTE_URL is set');
-    const copy = await createMtpModelCopy(page);
-    quoteUrl = copy.url;
-    quoteReference = copy.reference;
-    testInfo.annotations.push({ type: 'quote', description: copy.reference });
+    const quote = await createMtpSubmissionQuote(page);
+    quoteUrl = quote.url;
+    quoteReference = quote.reference;
+    testInfo.annotations.push({ type: 'quote', description: quote.reference });
+    expect(quote.reference).toMatch(/^RSK\d+Q001$/);
+    testInfo.annotations.push({ type: 'section validation', description: await buildMtpSections(page, quote.url) });
   });
 
   test('Insert schedule with geocoding and peril score', async ({ page }) => {
@@ -94,6 +69,8 @@ test.describe.serial('MTP - Quote', { tag: ['@flow', '@mtp-flow'] }, () => {
     await quote.open(quoteUrl);
     const rejected = await quote.getCommission();
     if (rejected.length) testInfo.annotations.push({ type: 'commission not rated', description: rejected.join(', ') });
+    await quote.fillEmptyCommissionRates(mtpCommission.brokerPercent); // the connector leaves "not rated" sections empty
+    mtpModel.url = quoteUrl; // sections, schedule and commission are on it now: the model the other MTP quotes are copied from
   });
 
   test('Get Pricing', async ({ page }, testInfo) => {

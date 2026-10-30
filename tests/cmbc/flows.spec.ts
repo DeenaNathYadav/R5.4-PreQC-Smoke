@@ -1,97 +1,54 @@
 import fs from 'fs';
 import { test, expect } from '../../src/fixtures';
 import { cancelPolicyMidTerm, endorsePolicy, reinstatePolicy } from '../../src/products/cmbc/flows/policy';
-import { createBoundPolicy, createCmbcModelCopy, issueWithSelfApproval, priceQuote, takeUpAndBind } from '../../src/products/cmbc/flows/quote';
+import {
+  buildCmbcSections,
+  cmbcModel,
+  createBoundPolicy,
+  createCmbcModelCopy,
+  createCmbcSubmissionQuote,
+  fillCtaRationale,
+  issueWithSelfApproval,
+  priceQuote,
+  takeUpAndBind,
+} from '../../src/products/cmbc/flows/quote';
 import { cmbc } from '../../src/products/cmbc';
 import { CmbcSectionsPage } from '../../src/products/cmbc/CmbcSectionsPage';
 import {
   cmbcAssignee,
   cmbcCancellation,
+  cmbcCommission,
   cmbcDocument,
   cmbcEndorsement,
-  cmbcQuote,
   cmbcReinstatement,
   cmbcScheduleFile,
   cmbcSections,
-  cmbcSubmission,
-  cmbcSubmissionDetails,
 } from '../../src/products/cmbc/data';
-import { NewSubmissionPage } from '../../src/pages/advantagego/NewSubmissionPage';
 import { PolicyPage } from '../../src/pages/advantagego/PolicyPage';
 import { QuoteDocumentsPage } from '../../src/pages/advantagego/QuoteDocumentsPage';
 import { QuotePage } from '../../src/pages/advantagego/QuotePage';
 import { readPremium } from '../../src/pages/advantagego/QuoteSectionsPage';
 import { SearchPage } from '../../src/pages/advantagego/SearchPage';
-import { SubmissionPage } from '../../src/pages/advantagego/SubmissionPage';
 import { recordContract } from '../../src/support/contracts';
 
 const cmbcPremiumGrossLabel = 'Policy Period Premium Gross of Comm. & Net of IPT';
 let policyUrl = cmbc.env('POLICY_URL');
 
-test.describe.serial('CMBC - Submission and conversion', { tag: ['@flow', '@cmbc-flow'] }, () => {
-  let quoteUrl = '';
-
-  test('Convert to Quote with PDBI and Liability child sections', async ({ page }, testInfo) => {
-    test.setTimeout(10 * 60_000);
-    const newSubmission = new NewSubmissionPage(page);
-    await newSubmission.open();
-    await newSubmission.fill(cmbcSubmission());
-    const submission = await newSubmission.submit();
-    await recordContract('CMBC Submission', submission.reference, `/ui/Submission/Edit/${submission.contractId}`);
-
-    const submissionPage = new SubmissionPage(page);
-    await submissionPage.open(submission.contractId);
-    await submissionPage.completeDetails(cmbcSubmissionDetails);
-    const quote = await submissionPage.convertToQuote(cmbcQuote);
-    quoteUrl = quote.url;
-    await recordContract('CMBC Quote', quote.reference, quote.url);
-    testInfo.annotations.push({ type: 'quote', description: quote.reference });
-
-    const sections = new CmbcSectionsPage(page);
-    await sections.open(quoteUrl);
-    await sections.selectOffering(cmbcSections.offering);
-    for (const riskSection of cmbcSections.riskSections) {
-      if (!(await page.getByText(riskSection, { exact: true }).first().isVisible())) {
-        const optionName = riskSection === 'LIABILITY' ? 'Liability' : riskSection;
-        await sections.addRiskSection(optionName, { verifyTree: true });
-        if (riskSection === 'PDBI') {
-          await expect(page.getByText('Business Interruption', { exact: true }).first()).toBeVisible({ timeout: 60_000 });
-          await expect(page.getByText('Property Damage', { exact: true }).first()).toBeVisible();
-        }
-      }
-    }
-    await sections.addChildRiskSection('LIABILITY', 'Public and Product Liability');
-    await sections.expectCmbcStructure(cmbcSections);
-    await sections.fillCmbcRequiredDetails(cmbcSections);
-    // With section data complete, the only validation left is the empty commission (Selected %)
-    await sections.saveExpectingValidation();
-    testInfo.annotations.push({
-      type: 'section validation',
-      description: (await page.locator('text=/Please enter|Error\\(s\\)/').allInnerTexts()).join(' | '),
-    });
-
-    // CMBC commission comes from the Commission connector (⋮ → Get Commission), not manual entry
-    const rejected = await new QuotePage(page).getCommission();
-    if (rejected.length) testInfo.annotations.push({ type: 'commission not rated', description: rejected.join(', ') });
-
-    await sections.save();
-    await sections.open(quoteUrl);
-    await sections.expectCmbcStructure(cmbcSections);
-    if (cmbc.env('PAUSE')) await page.pause();
-  });
-});
-
 test.describe.serial('CMBC - Quote', { tag: ['@flow', '@cmbc-flow'] }, () => {
   let quoteUrl = cmbc.env('QUOTE_URL');
   let quoteReference = '';
 
-  test('Create working quote from reference model', async ({ page }, testInfo) => {
-    test.setTimeout(8 * 60_000); // the Model copy opens slowly and its inception date is set before Save
+  // New Submission (inception today − 10 days) → Convert to Quote → offering, PDBI and Liability with their child sections, details,
+  // exposures and commission: the quote the rest of the chain works on, and the model the other CMBC quotes are copied from
+  test('Convert to Quote with PDBI and Liability child sections', async ({ page }, testInfo) => {
+    test.setTimeout(15 * 60_000);
     test.skip(!!quoteUrl, 'CMBC_QUOTE_URL is set');
-    const copy = await createCmbcModelCopy(page);
-    quoteUrl = copy.url;
-    quoteReference = copy.reference;
-    testInfo.annotations.push({ type: 'quote', description: copy.reference });
+    const quote = await createCmbcSubmissionQuote(page);
+    quoteUrl = quote.url;
+    quoteReference = quote.reference;
+    testInfo.annotations.push({ type: 'quote', description: quote.reference });
+    expect(quote.reference).toMatch(/^RSK\d+Q001$/);
+    testInfo.annotations.push({ type: 'section validation', description: await buildCmbcSections(page, quote.url) });
   });
 
   test('Insert schedule with geocoding and peril score', async ({ page }) => {
@@ -106,6 +63,8 @@ test.describe.serial('CMBC - Quote', { tag: ['@flow', '@cmbc-flow'] }, () => {
     await quote.open(quoteUrl);
     const rejected = await quote.getCommission();
     if (rejected.length) testInfo.annotations.push({ type: 'commission not rated', description: rejected.join(', ') });
+    await quote.fillEmptyCommissionRates(cmbcCommission.brokerPercent); // the connector leaves "not rated" sections empty
+    cmbcModel.url = quoteUrl; // sections, schedule and commission are on it now: the model the other CMBC quotes are copied from
   });
 
   test('Get Pricing', async ({ page }, testInfo) => {
@@ -195,6 +154,7 @@ test.describe('CMBC - Renewal', { tag: ['@flow', '@cmbc-flow'] }, () => {
     await policy.renew({ expectSchedules: true });
     const renewal = await policy.saveRenewal();
     await recordContract('CMBC Renewal Quote', renewal.reference, renewal.url);
+    await fillCtaRationale(page, renewal.url); // the renewal inherits a CTA whose rationale Issue Quote demands
     await priceQuote(page, renewal.url, { geocodeFirst: true }); // starts at Risk Details (no Get Price there) and its schedule is not geocoded
     await issueWithSelfApproval(page, renewal.url, cmbcSections.riskSections[0], cmbcAssignee);
     await takeUpAndBind(page, renewal.url, cmbcSections.riskSections[0], 'CMBC Renewal Policy');

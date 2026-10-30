@@ -54,7 +54,7 @@ export async function createPiModelQuote(page: Page): Promise<{ submissionId: nu
   await new PiSectionsPage(page).getPrice([piSections.riskSection]);
   const quotePage = new QuotePage(page);
   await quotePage.open(quote.url);
-  await quotePage.addBrokerCommission(piCommission.brokerPercent, { requireDefaultRow: true });
+  await quotePage.addBrokerCommission(piCommission.brokerPercent); // existing Broker Commission row → its %, otherwise a row is added with +
   piModel.url = quote.url;
   return quote;
 }

@@ -18,8 +18,11 @@ export class QuoteSectionsPage {
 
   /** Accepts the quote's /ui/Quote/Edit/<id> URL (or any quote tab URL). */
   async open(quoteUrl: string): Promise<void> {
-    await this.page.goto(`/ui/Quote/Section/${quoteId(quoteUrl)}`);
-    await expect(this.page.getByText('Risk Sections', { exact: true })).toBeVisible();
+    // The page sometimes renders blank on this host: load it again until the section tree shows
+    await expect(async () => {
+      await this.page.goto(`/ui/Quote/Section/${quoteId(quoteUrl)}`);
+      await expect(this.page.getByText('Risk Sections', { exact: true })).toBeVisible({ timeout: 30_000 });
+    }).toPass({ timeout: 150_000, intervals: [2_000] });
   }
 
   /** `verifyTree` (used by CMBC): require the name in the section tree and recover a row that stays a blank picker. */

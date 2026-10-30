@@ -68,8 +68,8 @@ export class QuotePage {
 
   /**
    * PI and PPP aren't eligible for ⋮ → Get Commission, so the Broker Commission deduction is set by hand:
-   * DETAILS → Commission → the Broker Commission row's Override % (→ Save). With `requireDefaultRow` the row must already be
-   * defaulted on the quote (the test fails when it is missing); without it a missing row is added with "+".
+   * DETAILS → Commission → the Broker Commission row's Selected % (→ Save). When the quote has no Broker Commission row yet, one is
+   * added with "+" (Deduction Type "Broker Commission"); with `requireDefaultRow` a missing row fails the test instead.
    */
   async addBrokerCommission(percent: string, { requireDefaultRow = false } = {}): Promise<void> {
     const { page } = this;
@@ -88,7 +88,7 @@ export class QuotePage {
       row = existing.first();
     } else {
       const before = await rows.count();
-      await page.locator('button[title="Add Commission"]').click();
+      await page.locator('button[title^="Add Commission"]').click();
       await expect(rows).toHaveCount(before + 1);
       row = rows.nth(before);
 
@@ -118,6 +118,44 @@ export class QuotePage {
     expect((await saved).ok(), 'UpdateQuote succeeded').toBeTruthy();
     await acknowledgeWarnings(page);
     // A "…may impact the premium, please press Get Price" banner is expected now; pricing follows in the next step.
+  }
+
+  /**
+   * Details → Commissions: gives every commission row that has no Selected % the value `percent`. The commission connector answers
+   * "not rated" for the test agency (error 90063) and leaves such rows empty, and a quote cannot move on without them. Rows that
+   * already have a rate (and blank placeholder rows) are left alone; saves only when something changed. Returns how many rows were set.
+   */
+  async fillEmptyCommissionRates(percent: string): Promise<number> {
+    const { page } = this;
+    const section = page.getByRole('button', { name: /^Commissions?$/ });
+    await section.scrollIntoViewIfNeeded();
+    const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
+    if (!(await grid.isVisible())) await section.click();
+    await expect(grid).toBeVisible();
+
+    const rows = grid.locator('.ag-center-cols-container .ag-row').filter({ has: page.locator('.ag-cell[col-id="DeductionTypeId"]') });
+    let changed = 0;
+    for (let i = 0; i < (await rows.count()); i++) {
+      const row = rows.nth(i);
+      if (!(await row.locator('.ag-cell[col-id="DeductionTypeId"]').innerText()).trim()) continue; // blank placeholder row
+      const rate = row.locator('.ag-cell[col-id="RatePercentage"]');
+      if (Number((await rate.innerText()).replace(/,/g, '')) > 0) continue;
+      await expect(async () => {
+        await rate.scrollIntoViewIfNeeded();
+        await rate.dblclick();
+        await page.keyboard.press('Control+A');
+        await page.keyboard.type(percent);
+        await page.keyboard.press('Enter');
+        await expect(rate).toContainText(percent, { timeout: 4_000 });
+      }).toPass({ timeout: 30_000 });
+      changed++;
+    }
+    if (!changed) return 0;
+    const saved = page.waitForResponse((r) => /api\/quote\/UpdateQuote/i.test(r.url()), { timeout: 60_000 });
+    await clickSave(page);
+    expect((await saved).ok(), 'UpdateQuote succeeded').toBeTruthy();
+    await acknowledgeWarnings(page);
+    return changed;
   }
 
   /**

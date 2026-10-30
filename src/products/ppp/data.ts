@@ -35,9 +35,16 @@ export const pppQuote: ConvertToQuoteData = {
   ],
 };
 
-// Quote → Sections. A Model copy of the reference quote (PPP_TEMPLATE_QUOTE_URL) already carries the PPP risk section,
-// its covers and the Broker Commission row, so none of that is added by the tests.
-export const pppSections = { riskSection: 'PPP' };
+// Quote → Sections. A quote converted from a submission has no risk section: the offering (the first one the product offers) is chosen and
+// the PPP risk section added. The quote created from the submission is the model every other PPP quote is a ⋮ → Model copy of
+// (there is no fixed reference quote).
+export const pppSections = {
+  riskSection: 'PPP',
+  offering: 'Standard PPP',
+  // A new quote already shows the offering, so choosing it again changes nothing: the sections default only when the offering is
+  // changed, so another offering is chosen first and "Standard PPP" afterwards
+  otherOffering: 'Bridge',
+};
 
 // Details → Commission: the Broker Commission row is updated (or added when missing) with this Override %
 export const pppCommission = { brokerPercent: '12' };

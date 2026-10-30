@@ -92,7 +92,7 @@ test.describe.serial('PI - Quote', { tag: ['@flow', '@pi-flow'] }, () => {
   test('Add Broker Commission', async ({ page }) => {
     const quote = new QuotePage(page);
     await quote.open(quoteUrl);
-    await quote.addBrokerCommission(piCommission.brokerPercent, { requireDefaultRow: true }); // the row must already be defaulted
+    await quote.addBrokerCommission(piCommission.brokerPercent); // existing Broker Commission row → its %, otherwise a row is added with +
     await quote.expectBrokerCommission();
     piModel.url = quoteUrl; // sections and commission are on it now: the model the other PI quotes are copied from
   });

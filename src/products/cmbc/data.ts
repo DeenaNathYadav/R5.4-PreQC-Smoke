@@ -70,6 +70,10 @@ export const cmbcSections: CmbcSectionData = {
   ],
 };
 
+// Details → Commissions: the commission connector answers "not rated" for the test agency (error 90063) and leaves the Selected %
+// of every section empty, so each empty row is given this value
+export const cmbcCommission = { brokerPercent: '12' };
+
 export const cmbcScheduleFile = path.resolve(
   cmbc.env('SCHEDULE_IMPORT') || path.join(__dirname, '../../../CMBC/CMBC_Schedule_Import.xlsx'),
 );

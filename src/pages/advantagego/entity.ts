@@ -57,7 +57,13 @@ export async function saveAcknowledgingWarnings(page: Page, done: () => Promise<
 /** Runs an action from the ⋮ "More" menu, e.g. "Convert to Quote". */
 export async function businessAction(page: Page, action: string): Promise<void> {
   await waitForIdle(page);
-  await page.locator('button[title="More"]').first().click();
+  // On this host a page sometimes renders blank: reload once when the ⋮ button does not show
+  const more = page.locator('button[title="More"]').first();
+  if (!(await more.waitFor({ state: 'visible', timeout: 25_000 }).then(() => true, () => false))) {
+    await page.reload();
+    await more.waitFor({ state: 'visible', timeout: 60_000 });
+  }
+  await more.click();
   // Scope to the open menu: some actions share their text with page labels (e.g. "Taken Up" is also a stage name)
   const inMenu = page.locator('.dropdown-menu:visible').getByText(action, { exact: true });
   // The menu fills in a moment after it opens, so give the entry a chance to appear before falling back
