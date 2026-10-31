@@ -353,19 +353,25 @@ export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
  */
 export async function getCommission(page: Page, quoteUrl: string): Promise<number> {
   const quote = new QuotePage(page);
-  await quote.open(quoteUrl);
-  await quote.getCommission(); // dialog accepted; sections it could not rate are left unchanged
-  const openCommissions = async () => {
+  const fleetRow = () => page.locator('.ag-row').filter({ has: page.locator('[col-id="DeductionTypeId"]', { hasText: 'Fleet' }) }).first();
+  const openCommissions = async (wait = 30_000) => {
     await page.reload();
     await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 60_000 });
     await page.getByRole('button', { name: 'Commissions', exact: true }).click();
-    const row = page.locator('.ag-row').filter({ has: page.locator('[col-id="DeductionTypeId"]', { hasText: 'Fleet' }) }).first();
-    await expect(row, 'the Fleet commission row').toBeVisible({ timeout: 30_000 });
-    return row;
+    await fleetRow().waitFor({ timeout: wait }).catch(() => {});
+    return fleetRow();
   };
   const selectedOf = async (row: Locator) => Number((await row.locator('[col-id="RatePercentage"]').innerText()).replace(/,/g, '')) || 0;
 
-  let row = await openCommissions();
+  // The connector takes about 15 seconds and its Fleet row sometimes is not there yet when the grid is read: ask again (up to 3 times)
+  let row = fleetRow();
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await quote.open(quoteUrl);
+    await quote.getCommission(); // dialog accepted; sections it could not rate are left unchanged
+    row = await openCommissions();
+    if (await row.isVisible()) break;
+  }
+  await expect(row, 'the Fleet commission row').toBeVisible({ timeout: 5_000 });
   if ((await selectedOf(row)) > 0) return selectedOf(row);
 
   await setGridCell(page, row, 'RatePercentage', fleetCommission.brokerPercent);
@@ -375,6 +381,7 @@ export async function getCommission(page: Page, quoteUrl: string): Promise<numbe
   await acknowledgeWarnings(page);
 
   row = await openCommissions();
+  await expect(row, 'the Fleet commission row').toBeVisible();
   const selected = await selectedOf(row);
   expect(selected, 'Selected % of the Fleet commission').toBeGreaterThan(0);
   return selected;

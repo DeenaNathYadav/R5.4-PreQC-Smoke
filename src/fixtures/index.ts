@@ -8,6 +8,27 @@ export interface Diagnostics {
 }
 
 export const test = base.extend<{ product: ProductConfig; diagnostics: Diagnostics }>({
+  // Playwright's own browser fixture, with the launch tried up to 3 times: Edge now and then crashes while starting
+  // ("browserType.launch: Target page, context or browser has been closed"), which would fail the first test of a chain
+  // and skip everything after it.
+  browser: [
+    async ({ playwright, browserName, headless, channel, launchOptions }, use) => {
+      let browser;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          browser = await playwright[browserName].launch({ ...launchOptions, headless, channel });
+          break;
+        } catch (e) {
+          if (attempt >= 3) throw e;
+          await new Promise((r) => setTimeout(r, 3_000));
+        }
+      }
+      await use(browser);
+      await browser.close();
+    },
+    { scope: 'worker', timeout: 0 },
+  ],
+
   product: async ({}, use, testInfo) => {
     await use(getProduct(testInfo.project.metadata.product));
   },

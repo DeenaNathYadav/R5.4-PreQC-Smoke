@@ -58,7 +58,10 @@ export class QuotePage {
     const { page } = this;
     await page.reload();
     const section = page.getByRole('button', { name: /^Commissions?$/ });
-    await section.scrollIntoViewIfNeeded();
+    // The Details tab re-renders for a moment after it opens, so the section element can detach under the call: retry
+    await expect(async () => {
+      await section.scrollIntoViewIfNeeded({ timeout: 8_000 });
+    }).toPass({ timeout: 40_000, intervals: [1_000] });
     const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
     if (!(await grid.isVisible())) await section.click();
     await expect(grid.locator('.ag-cell[col-id="DeductionTypeId"]', { hasText: 'Broker Commission' })).toBeVisible({
@@ -74,7 +77,10 @@ export class QuotePage {
   async addBrokerCommission(percent: string, { requireDefaultRow = false } = {}): Promise<void> {
     const { page } = this;
     const section = page.getByRole('button', { name: /^Commissions?$/ });
-    await section.scrollIntoViewIfNeeded();
+    // The Details tab re-renders for a moment after it opens, so the section element can detach under the call: retry
+    await expect(async () => {
+      await section.scrollIntoViewIfNeeded({ timeout: 8_000 });
+    }).toPass({ timeout: 40_000, intervals: [1_000] });
     const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
     if (!(await grid.isVisible())) await section.click();
     await expect(grid).toBeVisible();
@@ -128,7 +134,10 @@ export class QuotePage {
   async fillEmptyCommissionRates(percent: string): Promise<number> {
     const { page } = this;
     const section = page.getByRole('button', { name: /^Commissions?$/ });
-    await section.scrollIntoViewIfNeeded();
+    // The Details tab re-renders for a moment after it opens, so the section element can detach under the call: retry
+    await expect(async () => {
+      await section.scrollIntoViewIfNeeded({ timeout: 8_000 });
+    }).toPass({ timeout: 40_000, intervals: [1_000] });
     const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
     if (!(await grid.isVisible())) await section.click();
     await expect(grid).toBeVisible();

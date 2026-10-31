@@ -6,7 +6,6 @@ import {
   createBoundPolicy,
   createFleetModelCopy,
   createFleetSubmissionQuote,
-  fillRenewalPricingInputs,
   fleetModel,
   getCommission,
   getExperienceCall,
@@ -255,7 +254,6 @@ test.describe('Fleet - Renewal', { tag: ['@flow', '@fleet-flow'] }, () => {
       renewalUrl = renewal.url;
       await recordContract('Fleet Renewal Quote', renewal.reference, renewal.url);
     }
-    await fillRenewalPricingInputs(page, renewalUrl);
     await priceQuote(page, renewalUrl);
     await issueWithSelfApproval(page, renewalUrl, fleetSections.riskSection, fleetAssignee);
     await takeUpAndBind(page, renewalUrl, fleetSections.riskSection, 'Fleet Renewal Policy');

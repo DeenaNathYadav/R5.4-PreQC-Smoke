@@ -29,6 +29,7 @@ const HELP = `Usage: npm run smoke -- [options] [playwright options]
       --sequential        same as --mode sequential
   -i, --interactive       Ask which products and which mode
       --fail-fast         Sequential: stop after the first product that fails
+      --failed            Re-run only the sections that failed last time (results/last-failed.json), per product
       --no-auth           Skip the sign-in check (use the saved session as it is)
       --auth-only         Only run the sign-in check / session refresh, then stop
       --list              Show the products and whether they are configured, then stop
@@ -39,7 +40,7 @@ Anything else (--headed, --workers=1, -g "Get Pricing", a spec path ...) is pass
 
 // ------------------------------------------------------------------ arguments
 function parseArgs(argv) {
-  const opts = { products: undefined, mode: undefined, interactive: false, failFast: false, auth: true, authOnly: false, list: false, dryRun: false, pass: [] };
+  const opts = { products: undefined, mode: undefined, interactive: false, failFast: false, failed: false, auth: true, authOnly: false, list: false, dryRun: false, pass: [] };
   const value = (i, flag) => {
     const eq = argv[i].indexOf('=');
     if (eq > 0 && argv[i].startsWith('--')) return [argv[i].slice(eq + 1), i];
@@ -56,6 +57,7 @@ function parseArgs(argv) {
     else if (a === '--sequential' || a === '--serial') opts.mode = 'sequential';
     else if (a === '--interactive' || a === '-i') opts.interactive = true;
     else if (a === '--fail-fast') opts.failFast = true;
+    else if (a === '--failed' || a === '--rerun-failed') opts.failed = true;
     else if (a === '--no-auth') opts.auth = false;
     else if (a === '--auth-only') opts.authOnly = true;
     else if (a === '--list') opts.list = true;
@@ -308,7 +310,25 @@ async function runProduct(p, { prefix = '' } = {}) {
   const entry = summary.get(p.key);
   const dir = path.join(runDir, p.key);
   console.log(`\n=== ${p.title} ===`);
-  const args = [`--project=${p.key}`, '--no-deps', ...workersFor(p), ...opts.pass];
+  let rerun = [];
+  if (opts.failed) {
+    // The specs (file:line of every test in each failed section) the last run of this product recorded
+    let remembered = {};
+    try {
+      remembered = JSON.parse(fs.readFileSync(path.join(root, 'results', 'last-failed.json'), 'utf8'));
+    } catch {
+      /* nothing recorded yet */
+    }
+    rerun = remembered[p.key]?.specs ?? [];
+    if (!rerun.length) {
+      console.log(`Nothing failed last time for ${p.title}: nothing to re-run.`);
+      entry.status = 'nothing to re-run';
+      return 0;
+    }
+    console.log(`Re-running ${rerun.length} test(s) from the sections that failed (${remembered[p.key].updated.slice(0, 16).replace('T', ' ')}):`);
+    for (const spec of rerun) console.log(`  ${spec}`);
+  }
+  const args = [`--project=${p.key}`, '--no-deps', ...workersFor(p), ...rerun, ...opts.pass];
   const { code, ms } = await playwright(args, { env: { SMOKE_REPORT_DIR: dir }, prefix });
   entry.ms = ms;
   entry.counts = readJunit(path.join(dir, 'junit.xml'));
@@ -360,4 +380,4 @@ if (!opts.authOnly) {
   console.log(`  Reports: npx playwright show-report ${path.relative(root, path.join(runDir, '<product>', 'html'))}`);
 }
 
-process.exit(rows.every((r) => r.status === 'passed') || opts.authOnly && blocked.size === 0 ? 0 : 1);
+process.exit(rows.every((r) => r.status === 'passed' || r.status === 'nothing to re-run') || opts.authOnly && blocked.size === 0 ? 0 : 1);

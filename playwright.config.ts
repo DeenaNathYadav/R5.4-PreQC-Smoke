@@ -19,7 +19,7 @@ export default defineConfig({
   retries: isCI ? 1 : 0,
   workers: isCI ? 4 : undefined,
   reporter: [
-    ['list'],
+    process.env.SMOKE_REPORTER === 'list' ? ['list'] : ['./reporters/console-reporter.ts', { outputDir: resultsDir }],
     ['./reporters/contracts-reporter.ts', { outputDir: resultsDir }],
     ['html', { open: 'never', outputFolder: runDir ? path.join(runDir, 'html') : 'playwright-report' }],
     ['junit', { outputFile: path.join(resultsDir, 'junit.xml') }],

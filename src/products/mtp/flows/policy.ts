@@ -130,6 +130,9 @@ export async function reinstatePolicy(
   await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 60_000 });
   await recordContractFromPage(page, 'MTP Reinstatement (MTA)');
   await policyPage.expectReinstated();
+  // The reinstatement must price and confirm by itself, with no validation error left on the record
+  await expect(page.getByText('Error(s)'), 'validation errors on the reinstatement').toHaveCount(0);
+  await expect(page.getByText(/Halted At/), 'the reinstatement workflow halted').toHaveCount(0);
   const actions = await listActions(page);
   log(`reinstated policy actions: ${actions.join(' | ')}`);
   expect(actions, 'a reinstated policy can be cancelled again').toContain('Mid-Term Cancellation');

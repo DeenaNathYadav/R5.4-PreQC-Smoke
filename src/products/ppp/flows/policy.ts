@@ -136,9 +136,13 @@ export async function reinstatePolicy(
   await expect(confirmed.or(halted).first()).toBeVisible({ timeout: 120_000 });
   if (await halted.isVisible()) {
     const banner = (await page.locator('.alert, [class*=error], [class*=halt]').allInnerTexts()).join(' ').replace(/\s+/g, ' ').trim();
-    throw new Error(`The reinstatement workflow halted in the backend: ${banner || (await page.getByText(/Halted At/).first().innerText())} (${mtaUrl})`);
+    const reason = banner || (await page.getByText(/Halted At/).first().innerText());
+    throw new Error(`The reinstatement did not complete by itself (it must price and confirm automatically): the workflow halted in the backend: ${reason} (${mtaUrl})`);
   }
   await policyPage.expectReinstated();
+  // The reinstatement must price and confirm by itself, with no validation error left on the record
+  await expect(page.getByText('Error(s)'), 'validation errors on the reinstatement').toHaveCount(0);
+  await expect(page.getByText(/Halted At/), 'the reinstatement workflow halted').toHaveCount(0);
   const actions = await listActions(page);
   log(`reinstated policy actions: ${actions.join(' | ')}`);
   expect(actions, 'a reinstated policy can be cancelled again').toContain('Mid-Term Cancellation');
