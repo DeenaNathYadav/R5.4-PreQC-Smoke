@@ -9,6 +9,8 @@ const manualLogin = !!process.env.MANUAL_LOGIN;
 // The runner (scripts/run-smoke.mjs) gives each product its own report folder; unset = the classic shared locations.
 const runDir = process.env.SMOKE_REPORT_DIR ? path.resolve(process.env.SMOKE_REPORT_DIR) : '';
 const resultsDir = runDir || path.resolve('results');
+// One id per run, shared by every worker (they inherit it): the flow chains keep their values under it (src/support/runState.ts)
+process.env.SMOKE_RUN_ID ||= runDir ? path.basename(path.dirname(runDir)) + '-' + path.basename(runDir) : String(Date.now());
 
 export default defineConfig({
   testDir: './tests',

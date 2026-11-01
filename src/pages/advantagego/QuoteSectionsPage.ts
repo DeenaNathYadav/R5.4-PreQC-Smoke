@@ -154,8 +154,17 @@ export class QuoteSectionsPage {
 
     const priced = page.waitForResponse((r) => /api\/quote\/GetPrice/i.test(r.url()), { timeout: 120_000 });
     await dialog.getByRole('button', { name: 'Get Price', exact: true }).click();
-    // Matched on text alone: the toast's colour class varies (an MTA once showed it without toast-success)
-    await expectToast(page, 'Price is returned back from the rating engine', 'any');
+    // Matched on text alone: the toast's colour class varies (an MTA once showed it without toast-success). An error toast the
+    // rating engine answers with instead disappears after a few seconds, so its text is kept for the failure message.
+    const errors = new Set<string>();
+    const errorToast = page.locator('.toast.toast-error');
+    const returned = await expect(async () => {
+      for (const t of await errorToast.allInnerTexts().catch(() => [])) if (t.trim()) errors.add(t.trim().replace(/\s+/g, ' '));
+      await expect(page.locator('.toast').filter({ hasText: 'Price is returned back from the rating engine' }).first()).toBeVisible({ timeout: 500 });
+    }).toPass({ timeout: 120_000, intervals: [500] }).then(() => true, () => false);
+    if (!returned) {
+      throw new Error(`Get Price: no "Price is returned back from the rating engine"${errors.size ? `; the app said: ${[...errors].join(' | ')}` : ''}`);
+    }
     expect((await priced).ok(), 'GetPrice API succeeded').toBeTruthy();
   }
 }

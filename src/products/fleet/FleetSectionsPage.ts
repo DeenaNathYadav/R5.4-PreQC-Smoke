@@ -1,4 +1,5 @@
 import { Locator, Page, expect } from '@playwright/test';
+import fs from 'fs';
 import path from 'path';
 import { acknowledgeWarnings, clickSave, expectToast, waitForIdle } from '../../pages/advantagego/entity';
 import { selectDropdown } from '../../pages/advantagego/kendo';
@@ -165,5 +166,102 @@ export class FleetSectionsPage extends QuoteSectionsPage {
       const { scheduleCount: after } = await this.openFleetSchedule();
       expect(after, 'schedule items after import').toBe(scheduleCount + 1);
     }).toPass({ timeout: 90_000 });
+  }
+
+  // ------------------------------------------------------------------ manual schedule changes and export
+  // The SCHEDULE header has Search · Add New (+) · Delete (−) · Import · Export · ⋮ (Delete All, Copy/Paste, Vehicle Lookup …).
+
+  /** Quote → Sections → FLEET → SCHEDULE, with the settled schedule count. */
+  async openSchedule(quoteUrl: string): Promise<{ header: Locator; scheduleCount: number }> {
+    await this.open(quoteUrl);
+    return this.openFleetSchedule();
+  }
+
+  private scheduleRow(registration: string): Locator {
+    const { page } = this;
+    return page
+      .locator('.ag-center-cols-container .ag-row')
+      .filter({ has: page.locator('.ag-cell[col-id="Vehicle.VehicleRegistration"]', { hasText: registration }) });
+  }
+
+  /** Save writes the grid's changes ("…Saved Successfully"); a warnings banner is acknowledged. */
+  private async saveSchedule(): Promise<void> {
+    const { page } = this;
+    await page.waitForTimeout(2_000); // the grid commits the last edit a moment after Enter
+    await clickSave(page);
+    await acknowledgeWarnings(page);
+    await expectToast(page, /Saved Successfully/i, 'any', 60_000);
+    await waitForIdle(page);
+  }
+
+  /** Add New (+) → a new row at the end of the grid → its Vehicle Registration → Save. Checks the count went up by one. */
+  async addScheduleRow(quoteUrl: string, registration: string): Promise<number> {
+    const { page } = this;
+    const { header, scheduleCount } = await this.openSchedule(quoteUrl);
+    await header.locator('button[data-bs-title="Add New"]').click({ force: true });
+    await expect(page.getByText(new RegExp(`SHOWING ALL SCHEDULES: ${scheduleCount + 1}\\b`))).toBeVisible({ timeout: 30_000 });
+    await setGridCell(page, page.locator('.ag-center-cols-container .ag-row').last(), 'Vehicle.VehicleRegistration', registration);
+    await this.saveSchedule();
+    const { scheduleCount: after } = await this.openSchedule(quoteUrl);
+    expect(after, 'schedule items after Add New').toBe(scheduleCount + 1);
+    await expect(this.scheduleRow(registration), 'the added vehicle is saved').toBeVisible();
+    return after;
+  }
+
+  /** Edits a saved row's Vehicle Registration in the grid → Save. Checks the new value after a reload. */
+  async updateScheduleRow(quoteUrl: string, registration: string, newRegistration: string): Promise<void> {
+    await this.openSchedule(quoteUrl);
+    // Pinned by its position: once the registration changes, a row found by the old registration no longer matches
+    const rowIndex = await this.scheduleRow(registration).first().getAttribute('row-index');
+    const row = this.page.locator(`.ag-center-cols-container .ag-row[row-index="${rowIndex}"]`);
+    await setGridCell(this.page, row, 'Vehicle.VehicleRegistration', newRegistration);
+    await this.saveSchedule();
+    await this.openSchedule(quoteUrl);
+    await expect(this.scheduleRow(newRegistration), 'the updated vehicle is saved').toBeVisible();
+    await expect(this.scheduleRow(registration), 'the old registration is gone').toHaveCount(0);
+  }
+
+  /** Ticks the row → Delete (−) → "…will be deleted permanently. Do you want to continue?" Ok → Save. Checks the count went down by one. */
+  async deleteScheduleRow(quoteUrl: string, registration: string): Promise<void> {
+    const { page } = this;
+    const { header, scheduleCount } = await this.openSchedule(quoteUrl);
+    const row = this.scheduleRow(registration).first();
+    const rowIndex = await row.getAttribute('row-index');
+    // The selection checkbox can sit in the pinned-left part of the same row
+    const checkbox = (index: string | null) =>
+      page.locator(`.ag-row[row-index="${index}"] .ag-selection-checkbox, .ag-row[row-index="${index}"] input[type=checkbox]`).first();
+    // The grid can open with another row already ticked, and Delete removes every ticked row: untick the others first
+    const selected = page.locator('.ag-center-cols-container .ag-row.ag-row-selected');
+    for (const other of await selected.all()) {
+      const index = await other.getAttribute('row-index');
+      if (index !== rowIndex) await checkbox(index).click({ force: true });
+    }
+    if (!(await row.evaluate((el) => el.classList.contains('ag-row-selected')))) await checkbox(rowIndex).click({ force: true });
+    await expect(selected, 'only the row to delete is ticked').toHaveCount(1);
+    await expect(row).toHaveClass(/ag-row-selected/);
+    await header.locator('button[data-bs-title="Delete"]').click({ force: true });
+    const confirm = page.getByRole('dialog').filter({ hasText: /will be deleted permanently/ });
+    await expect(confirm).toBeVisible({ timeout: 30_000 });
+    await confirm.getByRole('button', { name: 'Ok', exact: true }).click();
+    // Ok only takes the row out of the grid; like Add New and an edit, the deletion is written by Save
+    await this.saveSchedule();
+    await expect(async () => {
+      const { scheduleCount: after } = await this.openSchedule(quoteUrl);
+      expect(after, 'schedule items after Delete').toBe(scheduleCount - 1);
+    }).toPass({ timeout: 90_000 });
+    await expect(this.scheduleRow(registration)).toHaveCount(0);
+  }
+
+  /** Export → Export downloads the schedule as .xlsx (scheduleExportData). Returns the file name and size. */
+  async exportSchedule(quoteUrl: string): Promise<{ fileName: string; size: number }> {
+    const { page } = this;
+    const { header } = await this.openSchedule(quoteUrl);
+    await header.locator('button[data-bs-title="Export"]').click({ force: true });
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90_000 }),
+      header.locator('.dropdown-menu:visible').getByText('Export', { exact: true }).first().click(),
+    ]);
+    const file = await download.path();
+    return { fileName: download.suggestedFilename(), size: fs.statSync(file).size };
   }
 }

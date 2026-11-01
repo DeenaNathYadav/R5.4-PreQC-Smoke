@@ -1,4 +1,4 @@
-import { Page, expect } from '@playwright/test';
+import { Page, expect, test } from '@playwright/test';
 import { listActions, saveAcknowledgingWarnings, waitForIdle } from '../../../pages/advantagego/entity';
 import { fieldContainer } from '../../../pages/advantagego/kendo';
 import { NewSubmissionPage } from '../../../pages/advantagego/NewSubmissionPage';
@@ -7,6 +7,7 @@ import { QuoteDocumentsPage } from '../../../pages/advantagego/QuoteDocumentsPag
 import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
+import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { CmbcSectionsPage } from '../CmbcSectionsPage';
 import { cmbcAssignee, cmbcCommission, cmbcQuote, cmbcScheduleFile, cmbcSections, cmbcSubmission, cmbcSubmissionDetails } from '../data';
@@ -21,28 +22,38 @@ export const cmbcDocumentWait = { retries: 6, delayMs: 20_000 };
  * The CMBC quote every other CMBC quote is copied from: the quote created from the submission in the "CMBC - Quote" chain (or built by
  * createCmbcModelCopy). There is no fixed reference quote.
  */
-export const cmbcModel = { url: '' };
+export const cmbcModel = persisted('cmbc-model', { url: '' }); // kept for the run, so a failed test does not lose it
 
-/** New Submission (inception today − 10 days) → Convert to Quote: the bare quote, with no offering or sections yet. */
-export async function createCmbcSubmissionQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
+/** New Submission (inception today − 10 days) → Submit. Returns the submission's reference and id. */
+export async function createCmbcSubmission(page: Page): Promise<{ reference: string; contractId: number }> {
   const newSubmission = new NewSubmissionPage(page);
   await newSubmission.open();
   await newSubmission.fill(cmbcSubmission());
-  const { reference, contractId } = await newSubmission.submit();
-  await recordContract('CMBC Submission', reference, `/ui/Submission/Edit/${contractId}`);
+  const submitted = await newSubmission.submit();
+  await recordContract('CMBC Submission', submitted.reference, `/ui/Submission/Edit/${submitted.contractId}`);
+  return submitted;
+}
 
+/** The submission's remaining details (asked for by Convert to Quote) → Convert to Quote: the bare quote, no offering or sections yet. */
+export async function convertCmbcSubmission(page: Page, submissionId: number): Promise<{ reference: string; url: string }> {
   const submission = new SubmissionPage(page);
-  await submission.open(contractId);
+  await submission.open(submissionId);
   await submission.completeDetails(cmbcSubmissionDetails);
   const quote = await submission.convertToQuote(cmbcQuote);
   await recordContract('CMBC Quote', quote.reference, quote.url);
-  return { submissionId: contractId, ...quote };
+  return quote;
+}
+
+/** New Submission → Convert to Quote in one go (the model quote built when a test needs one and the chain has none). */
+export async function createCmbcSubmissionQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
+  const { contractId } = await createCmbcSubmission(page);
+  return { submissionId: contractId, ...(await convertCmbcSubmission(page, contractId)) };
 }
 
 /**
- * Quote → Sections: offering, PDBI and Liability with their child sections, the required details and exposures, then the commission
- * (⋮ → Get Commission, and a Selected % for every section the connector could not rate) and a final Save. Returns the validation text
- * the first Save listed (what was still missing at that point), for the report.
+ * Quote → Sections: offering, PDBI and Liability with their child sections, the required details and exposures, a Selected % for every
+ * section (typed in; ⋮ Get Commission is its own test) and the Save. All in one go: the app keeps the sections in memory only, and refuses
+ * the Save while any detail or Selected % is empty. Returns the validation text the first Save listed, for the report.
  */
 export async function buildCmbcSections(page: Page, quoteUrl: string): Promise<string> {
   const sections = new CmbcSectionsPage(page);
@@ -65,15 +76,22 @@ export async function buildCmbcSections(page: Page, quoteUrl: string): Promise<s
   await sections.saveExpectingValidation();
   const validation = (await page.locator('text=/Please enter|Error\\(s\\)/').allInnerTexts()).join(' | ');
 
-  // Get Commission and the final Save stay on the Sections page: the sections are only in memory until that Save succeeds
+  // The sections are only in memory until their Save succeeds, and it is refused while any section has no commission ("Please enter a
+  // valid commission value for Selected %") or a required detail is empty. ⋮ Get Commission is a test of its own (on the saved quote),
+  // so here every section's Selected % is typed in on the Details tab (switched inside the app, so the sections stay in memory), then
+  // back to Sections → Save. Only when the quote has no commission rows to type into yet does ⋮ Get Commission run here to create them.
   const quote = new QuotePage(page);
-  await quote.getCommission();
+  if (!(await quote.fillEmptyCommissionRates(cmbcCommission.brokerPercent))) {
+    const commission = await quote.getCommissionOrAddManually(cmbcCommission.brokerPercent);
+    test.info().annotations.push({ type: 'commission', description: 'no commission rows yet: ⋮ Get Commission created them' });
+    if (commission.error) {
+      test.info().annotations.push({ type: 'commission added by hand', description: commission.error.message.split('\n')[0] });
+    }
+  }
+  await page.getByRole('button', { name: 'Sections', exact: true }).first().click();
   await sections.save();
   await sections.open(quoteUrl);
   await sections.expectCmbcStructure(cmbcSections);
-  // Sections the connector could not rate (error 90063) keep an empty Selected %: give them one (Details tab)
-  await quote.open(quoteUrl);
-  await quote.fillEmptyCommissionRates(cmbcCommission.brokerPercent);
   return validation;
 }
 
@@ -150,7 +168,14 @@ export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSe
 }
 
 /** An issued quote → Taken Up → Policy Conversion → Save → Confirm Cover (Bound), then all policy documents Completed. */
-export async function takeUpAndBind(page: Page, quoteUrl: string, riskSection: string, step = 'CMBC Policy'): Promise<CreatedPolicy> {
+export async function takeUpAndBind(
+  page: Page,
+  quoteUrl: string,
+  riskSection: string,
+  step = 'CMBC Policy',
+  onBound: (policy: CreatedPolicy) => void = () => {},
+  checkDocuments = true,
+): Promise<CreatedPolicy> {
   const quote = new QuotePage(page);
   await quote.open(quoteUrl);
   await quote.takeUp([riskSection]);
@@ -158,9 +183,12 @@ export async function takeUpAndBind(page: Page, quoteUrl: string, riskSection: s
   const policy = await policyPage.saveConversion();
   await recordContract(step, policy.reference, policy.url);
   await policyPage.confirmCover();
-  const docs = new QuoteDocumentsPage(page, 'Policy');
-  await docs.open(policy.url);
-  await docs.expectAllDocumentsCompleted(cmbcDocumentWait);
+  onBound(policy); // the policy is usable even when its documents later end "In Error"
+  if (checkDocuments) {
+    const docs = new QuoteDocumentsPage(page, 'Policy');
+    await docs.open(policy.url);
+    await docs.expectAllDocumentsCompleted(cmbcDocumentWait);
+  }
   return policy;
 }
 
@@ -190,7 +218,9 @@ export async function priceQuote(page: Page, quoteUrl: string, { geocodeFirst = 
  */
 export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
   const copy = await createCmbcModelCopy(page);
-  await priceQuote(page, copy.url);
+  // The copy goes through the same operations as the quote it was copied from, geocoding + peril score of its schedule included
+  await priceQuote(page, copy.url, { geocodeFirst: true });
   await issueWithSelfApproval(page, copy.url, cmbcSections.riskSections[0], cmbcAssignee);
-  return takeUpAndBind(page, copy.url, cmbcSections.riskSections[0]);
+  // Set-up policy for the cancellation / renewal tests: its documents are asserted by the Taken up quote test, not here
+  return takeUpAndBind(page, copy.url, cmbcSections.riskSections[0], 'CMBC Policy', () => {}, false);
 }

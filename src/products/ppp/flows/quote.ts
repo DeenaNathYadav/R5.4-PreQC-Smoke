@@ -7,6 +7,7 @@ import { QuoteDocumentsPage } from '../../../pages/advantagego/QuoteDocumentsPag
 import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
+import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { PppSectionsPage } from '../PppSectionsPage';
 import { pppAssignee, pppCommission, pppQuote, pppScheduleFile, pppSections, pppSubmission, pppSubmissionDetails } from '../data';
@@ -21,7 +22,7 @@ export const pppDocumentWait = { retries: 6, delayMs: 20_000 };
  * The PPP quote every other PPP quote is copied from: the quote created from the submission in the "PPP - Quote" chain (or built by
  * createPppModelCopy). There is no fixed reference quote.
  */
-export const pppModel = { url: '' };
+export const pppModel = persisted('ppp-model', { url: '' }); // kept for the run, so a failed test does not lose it
 
 /** New Submission (inception today − 10 days) → Convert to Quote: the bare quote, with no offering or risk section yet. */
 export async function createPppSubmissionQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
@@ -149,15 +150,18 @@ export async function priceQuote(page: Page, quoteUrl: string, { geocodeFirst = 
 /**
  * A renewal quote carries the Commercial Trading Adjustment from the policy it renews and Issue Quote then refuses it
  * ("CTA rationale field is mandatory"): Details → Premium → Commercial Trading Adjustment Rationale, pick the first reason, Save.
- * Does nothing when a rationale is already set.
+ * Does nothing when a rationale is already set, or when the quote has no such field (PPP's renewal quotes usually carry none).
  */
 export async function fillCtaRationale(page: Page, quoteUrl: string): Promise<void> {
   await expect(async () => {
     await page.goto(quoteUrl);
     await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 30_000 });
   }).toPass({ timeout: 120_000 });
-  await page.getByText('Premium', { exact: true }).first().click();
+  const premium = page.getByText('Premium', { exact: true }).first();
+  if (!(await premium.isVisible().catch(() => false))) return;
+  await premium.click();
   const rationale = fieldContainer(page, 'Commercial Trading Adjustment Rationale');
+  if (!(await rationale.first().waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false))) return;
   await rationale.scrollIntoViewIfNeeded();
   if ((await rationale.locator('input').first().inputValue()).trim()) return;
   await rationale.locator('.k-input-button').click();
@@ -176,7 +180,8 @@ export async function fillCtaRationale(page: Page, quoteUrl: string): Promise<vo
  */
 export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
   const copy = await createPppModelCopy(page);
-  await priceQuote(page, copy.url);
+  // The copy goes through the same operations as the quote it was copied from, geocoding + peril score of its schedule included
+  await priceQuote(page, copy.url, { geocodeFirst: true });
   await issueWithSelfApproval(page, copy.url, pppSections.riskSection, pppAssignee);
   // Set-up policy for the cancellation / renewal tests: its documents are asserted by the Taken up quote test, not here
   return takeUpAndBind(page, copy.url, pppSections.riskSection, 'PPP Policy', () => {}, false);

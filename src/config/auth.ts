@@ -32,13 +32,51 @@ export function authFiles(product: ProductConfig) {
   };
 }
 
+/**
+ * Writes `data` so a reader never sees a half-written file: into a temporary file next to it, then renamed over it. Products running
+ * side by side share the session files, and a test starting while another saves would otherwise read broken JSON. When the rename is
+ * refused (Windows keeps a file locked for a moment while another process reads it), it is retried, then the file is written in place
+ * as before.
+ */
+export function writeFileAtomic(file: string, data: string): void {
+  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temp, data);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      fs.renameSync(temp, file);
+      return;
+    } catch (e) {
+      if (attempt >= 10) {
+        fs.rmSync(temp, { force: true });
+        fs.writeFileSync(file, data);
+        return;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); // a short synchronous pause before trying again
+    }
+  }
+}
+
 /** Playwright's storageState covers cookies + localStorage; sessionStorage is saved alongside it. */
 export async function saveSession(page: Page, product: ProductConfig): Promise<void> {
   const files = authFiles(product);
   fs.mkdirSync(authDir, { recursive: true });
-  await page.context().storageState({ path: files.storageState });
+  const state = await page.context().storageState();
   const session = await page.evaluate(() => JSON.stringify(sessionStorage));
-  fs.writeFileSync(files.sessionStorage, session);
+  writeFileAtomic(files.storageState, JSON.stringify(state, null, 2));
+  writeFileAtomic(files.sessionStorage, session);
+}
+
+/**
+ * Saves the session a test leaves behind, when it is still signed in on the product's host. The app's tokens last about an hour and
+ * a long run outlives the session saved at its start: a fresh page then has to renew them first, and lands on the Dashboard
+ * instead of its link, or hangs on "Refreshing Token" with a blank page. Saving after each test keeps the next one's tokens fresh.
+ */
+export async function refreshSavedSession(page: Page, product: ProductConfig): Promise<void> {
+  if (!product.baseUrl || page.isClosed()) return;
+  const url = page.url();
+  if (!url.startsWith(new URL(product.baseUrl).origin) || /\/ui\/login/i.test(url)) return;
+  if (!(await page.locator(product.loggedInIndicator).first().isVisible().catch(() => false))) return;
+  await saveSession(page, product);
 }
 
 export async function restoreSessionStorage(context: BrowserContext, product: ProductConfig): Promise<void> {

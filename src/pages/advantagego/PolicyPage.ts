@@ -306,6 +306,8 @@ export class PolicyPage {
     refundBasis: string;
     declaration?: string;
     effectiveFrom?: Date;
+    /** PPP: the cancellation's Effective To (today); its reinstatement only prices when the cancellation was saved with it. */
+    effectiveTo?: Date;
     /** Fleet leaves the mandatory Effective To empty: picked as inception + this many days. */
     effectiveToDaysAfterInception?: number;
   }): Promise<void> {
@@ -318,6 +320,10 @@ export class PolicyPage {
     await selectDropdown(page, 'Reason Code', data.reasonCode);
     await field(page, 'Reason Description').fill(data.reasonDescription);
     await selectDropdown(page, 'Refund Basis', data.refundBasis);
+    if (data.effectiveTo && (await field(page, 'Effective To').inputValue()).trim() !== formatDate(data.effectiveTo)) {
+      await selectDate(page, 'Effective To', data.effectiveTo);
+      await expect(field(page, 'Effective To')).toHaveValue(formatDate(data.effectiveTo));
+    }
     if (data.effectiveToDaysAfterInception !== undefined && !(await field(page, 'Effective To').inputValue()).trim()) {
       const to = await this.inceptionDate();
       to.setDate(to.getDate() + data.effectiveToDaysAfterInception);

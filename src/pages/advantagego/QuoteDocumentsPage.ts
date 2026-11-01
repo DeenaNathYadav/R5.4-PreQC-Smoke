@@ -19,8 +19,19 @@ export class QuoteDocumentsPage {
 
   async open(entityUrl: string): Promise<void> {
     this.entityUrl = entityUrl;
-    await this.page.goto(`/ui/${this.entity}/Documents/${entityId(entityUrl)}`);
-    await expect(this.page.getByText(/Documents \(\d+\)/).first()).toBeVisible({ timeout: 60_000 });
+    const url = `/ui/${this.entity}/Documents/${entityId(entityUrl)}`;
+    const loaded = this.page.getByText(/Documents \(\d+\)/).first();
+    // On a fresh page the app may first sign in again by itself (Microsoft → /ui/login?code=…) and then land on the Dashboard
+    // instead of the link: open the link again, as gotoWithMenu does for the other screens
+    for (let attempt = 1; ; attempt++) {
+      await this.page.goto(url);
+      try {
+        await expect(loaded).toBeVisible({ timeout: attempt < 3 ? 40_000 : 60_000 });
+        return;
+      } catch (e) {
+        if (attempt >= 3) throw e;
+      }
+    }
   }
 
   /** Terms tab → Attach Terms → Automatic Wording. Passes whether the wording was just attached or already was. */
@@ -75,12 +86,22 @@ export class QuoteDocumentsPage {
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (attempt > 0) await page.waitForTimeout(delayMs);
       await page.getByText('Terms', { exact: true }).locator('visible=true').first().click();
+      // The grid's data call also carries each document's ErrorDescription (the grid shows only "In Error")
+      const data = page
+        .waitForResponse((r) => /DocumentService\/api\/Documents\/GetDocumentData/i.test(r.url()), { timeout: 60_000 })
+        .then((r) => r.json() as Promise<{ DocumentResponsed?: { title: string; status: string; ErrorDescription?: string | null }[] }>)
+        .catch(() => undefined);
       await this.open(this.entityUrl); // back to the Documents grid with fresh statuses
       await expect(this.page.locator('.ag-center-cols-container .ag-row').first()).toBeVisible({ timeout: 30_000 });
       statuses = await this.statuses();
       if (statuses.length > 0 && statuses.every((s) => /^completed$/i.test(s))) return statuses;
       // "In Error" is final (the document service failed to generate it): waiting longer cannot help
-      if (statuses.some((s) => /error/i.test(s))) throw new Error(`Document generation failed: ${statuses.join(', ')}`);
+      if (statuses.some((s) => /error/i.test(s))) {
+        const failed = ((await data)?.DocumentResponsed ?? [])
+          .filter((d) => /error/i.test(d.status))
+          .map((d) => `${d.title} (${d.ErrorDescription || d.status})`);
+        throw new Error(`Document generation failed: ${failed.length ? failed.join(', ') : statuses.join(', ')}`);
+      }
     }
     throw new Error(`Not all documents completed after ${retries + 1} checks (${delayMs / 1000}s apart): ${statuses.join(', ')}`);
   }

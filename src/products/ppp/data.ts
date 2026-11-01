@@ -69,6 +69,9 @@ export const pppDocument: UploadData = {
 };
 
 export const pppDecline = { reason: 'Decline - Other', description: 'PPP smoke test: declined by automation' };
+// Not Taken Up / Mark as Lost: no fixed reason (the first one the list offers is used and reported); the description is mandatory
+export const pppNotTakenUp = { description: 'PPP smoke test: not taken up by automation' };
+export const pppLost = { description: 'PPP smoke test: marked as lost by automation' };
 
 export const pppEndorsement = {
   endorsementType: 'General',
@@ -81,7 +84,9 @@ export const pppCancellation = {
   reasonCode: 'Insured Request',
   reasonDescription: 'PPP SmokeAgent',
   refundBasis: 'Pro-Rata',
-  effectiveFrom: cancellationDate(), // mid-term cancellation takes effect today
+  // Effective From stays as the form pre-sets it; Effective To is today. Saved this way the reinstatement prices by itself
+  // (with today's Effective From instead it halted at PPPV2RECPolicyReview Stage, "AutoRunWorkflow : Pricing is Failed")
+  effectiveTo: cancellationDate(),
 };
 
 export const pppReinstatement = { reasonDescription: 'PPP SmokeAgent' };

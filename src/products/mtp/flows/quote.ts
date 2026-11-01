@@ -1,4 +1,4 @@
-import { Page, expect } from '@playwright/test';
+import { Page, expect, test } from '@playwright/test';
 import {
   acknowledgeUntil,
   acknowledgeWarnings,
@@ -16,6 +16,7 @@ import { QuoteDocumentsPage } from '../../../pages/advantagego/QuoteDocumentsPag
 import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
+import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { MtpSectionsPage } from '../MtpSectionsPage';
 import {
@@ -39,22 +40,32 @@ export const mtpDocumentWait = { retries: 6, delayMs: 20_000 };
  * The MTP quote every other MTP quote is copied from: the quote created from the submission in the "MTP - Quote" chain (or built by
  * createMtpModelCopy). There is no fixed reference quote.
  */
-export const mtpModel = { url: '' };
+export const mtpModel = persisted('mtp-model', { url: '' }); // kept for the run, so a failed test does not lose it
 
-/** New Submission (inception today − 10 days) → Convert to Quote: the bare quote, with no risk sections yet. */
-export async function createMtpSubmissionQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
+/** New Submission (inception today − 10 days) → Submit. Returns the submission's reference and id. */
+export async function createMtpSubmission(page: Page): Promise<{ reference: string; contractId: number }> {
   const newSubmission = new NewSubmissionPage(page);
   await newSubmission.open();
   await newSubmission.fill(mtpSubmission());
-  const { reference, contractId } = await newSubmission.submit();
-  await recordContract('MTP Submission', reference, `/ui/Submission/Edit/${contractId}`);
+  const submitted = await newSubmission.submit();
+  await recordContract('MTP Submission', submitted.reference, `/ui/Submission/Edit/${submitted.contractId}`);
+  return submitted;
+}
 
+/** The submission's remaining details (asked for by Convert to Quote) → Convert to Quote: the bare quote, with no risk sections yet. */
+export async function convertMtpSubmission(page: Page, submissionId: number): Promise<{ reference: string; url: string }> {
   const submission = new SubmissionPage(page);
-  await submission.open(contractId);
+  await submission.open(submissionId);
   await submission.completeDetails(mtpSubmissionDetails);
   const quote = await submission.convertToQuote(mtpQuote);
   await recordContract('MTP Quote', quote.reference, quote.url);
-  return { submissionId: contractId, ...quote };
+  return quote;
+}
+
+/** New Submission → Convert to Quote in one go (the model quote built when a test needs one and the chain has none). */
+export async function createMtpSubmissionQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
+  const { contractId } = await createMtpSubmission(page);
+  return { submissionId: contractId, ...(await convertMtpSubmission(page, contractId)) };
 }
 
 /**
@@ -75,11 +86,13 @@ export async function buildMtpSections(page: Page, quoteUrl: string): Promise<st
 
   // Get Commission stays on the Sections page (the sections are only in memory until saved)
   const quote = new QuotePage(page);
-  await quote.getCommission();
   // The sections that could not be rated (error 90063) keep an empty Selected %: fill them on the Details tab and come back. The tabs
-  // are switched inside the app (no page load) so the unsaved sections stay in memory.
-  await page.getByRole('button', { name: 'Details', exact: true }).first().click();
-  await quote.fillEmptyCommissionRates(mtpCommission.brokerPercent);
+  // are switched inside the app (no page load) so the unsaved sections stay in memory. When Get Commission errors, the Broker
+  // Commission goes on by hand there instead, so the sections can still be saved; the "Get Commission" test reports the error.
+  const commission = await quote.getCommissionOrAddManually(mtpCommission.brokerPercent);
+  if (commission.error) {
+    test.info().annotations.push({ type: 'commission added by hand', description: commission.error.message.split('\n')[0] });
+  }
   await page.getByRole('button', { name: 'Sections', exact: true }).first().click();
   // Save, then prove it by reopening the quote: the "Quote Saved" toast is easy to miss, the sections in the tree are not
   await clickSave(page);

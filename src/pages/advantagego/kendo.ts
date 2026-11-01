@@ -112,6 +112,10 @@ export async function selectDialogDropdown(page: Page, dialog: Locator, label: s
   for (let attempt = 0; attempt < 5; attempt++) {
     await dialogField(dialog, label).locator('.k-input-button').first().click();
     if (await match.waitFor({ state: 'visible', timeout: 12_000 }).then(() => true, () => false)) break;
+    // A long list (the users under Enter Name) only renders the rows in view: type the option to filter it down to it
+    await dialogField(dialog, label).locator('input').first().pressSequentially(option, { delay: 30 }).catch(() => {});
+    if (await match.waitFor({ state: 'visible', timeout: 8_000 }).then(() => true, () => false)) break;
+    await dialogField(dialog, label).locator('input').first().clear().catch(() => {});
     // Click the dialog's top-left corner to close the list (Escape would close the whole dialog)
     await dialog.click({ position: { x: 4, y: 4 } });
     await page.waitForTimeout(5_000);
@@ -119,6 +123,29 @@ export async function selectDialogDropdown(page: Page, dialog: Locator, label: s
   await expect(match).toBeVisible({ timeout: 30_000 });
   await match.click();
   await expect(dialogField(dialog, label).locator('input').first()).toHaveValue(new RegExp(escapeRegExp(option)));
+}
+
+/**
+ * Single-select Kendo combobox in a dialog, when any value will do (e.g. a reason list whose entries differ per environment): picks the
+ * first option the list offers once it has loaded, and returns its text.
+ */
+export async function selectFirstDialogOption(page: Page, dialog: Locator, label: string): Promise<string> {
+  const first = page.getByRole('option').first();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await dialogField(dialog, label).locator('.k-input-button').first().click();
+    // Loaded from the API after the field is opened: an empty list says "NO DATA FOUND" until then
+    if (await first.waitFor({ state: 'visible', timeout: 12_000 }).then(() => true, () => false)) {
+      const text = (await first.innerText()).replace(/\s+/g, ' ').trim();
+      if (text && !/no data found/i.test(text)) {
+        await first.click();
+        return text;
+      }
+    }
+    // Click the dialog's top-left corner to close the list (Escape would close the whole dialog)
+    await dialog.click({ position: { x: 4, y: 4 } });
+    await page.waitForTimeout(5_000);
+  }
+  throw new Error(`"${label}" offers no option to choose`);
 }
 
 /** Kendo multiselect in a dialog: opens the list by clicking the input and picks one option. */

@@ -1,4 +1,4 @@
-import { Locator, Page, expect } from '@playwright/test';
+import { Locator, Page, expect, test } from '@playwright/test';
 import {
   acknowledgeUntil,
   acknowledgeWarnings,
@@ -16,6 +16,7 @@ import { QuoteDocumentsPage } from '../../../pages/advantagego/QuoteDocumentsPag
 import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
+import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { FleetSectionsPage, setGridCell } from '../FleetSectionsPage';
 import {
@@ -40,9 +41,9 @@ export const fleetDocumentWait = { retries: 6, delayMs: 20_000 };
 
 /**
  * The Fleet quote every other Fleet quote is copied from. It is the quote created from the submission (see createFleetQuote), so
- * there is no fixed reference quote: whoever needs a model first builds it, later users in the same worker reuse it.
+ * there is no fixed reference quote: whoever needs a model first builds it, later users in the run reuse it.
  */
-export const fleetModel = { url: '' };
+export const fleetModel = persisted('fleet-model', { url: '' }); // kept for the run, so a failed test does not lose it
 
 /** New Submission (inception today − 10 days) → Convert to Quote: the bare quote, with no offering, sections or schedule yet. */
 export async function createFleetSubmissionQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
@@ -70,7 +71,10 @@ export async function createFleetQuote(page: Page): Promise<{ submissionId: numb
   await sections.addFleetSections(quote.url, fleetSections);
   await sections.open(quote.url);
   await sections.importFleetSchedule(fleetScheduleFile);
-  await getCommission(page, quote.url);
+  // An errored Get Commission has had the commission added by hand: the model is still usable, so carry on
+  await getCommission(page, quote.url).catch((e: Error) =>
+    test.info().annotations.push({ type: 'commission added by hand', description: e.message.split('\n')[0] }),
+  );
   fleetModel.url = quote.url;
   return quote;
 }
@@ -195,6 +199,13 @@ async function fillClaimsExperienceYears(page: Page, years: number): Promise<boo
  */
 export async function setClaimsExperience(page: Page, quoteUrl: string, years = fleetClaims.years): Promise<boolean> {
   await new QuotePage(page).open(quoteUrl);
+  const changed = await claimsExperienceFields(page, years);
+  if (changed) await saveDetails(page);
+  return changed;
+}
+
+/** The fields part of setClaimsExperience, on the open Details tab. Returns whether anything changed (nothing is saved). */
+async function claimsExperienceFields(page: Page, years: string): Promise<boolean> {
   if (!(await fieldContainer(page, claimsYearsLabel).isVisible())) {
     // The sub-section sits inside "Claims Experience Analysis": open that first when the sub-section header is not on screen
     const subSection = page.getByRole('button', { name: 'Years Claims Experience', exact: true });
@@ -209,14 +220,16 @@ export async function setClaimsExperience(page: Page, quoteUrl: string, years = 
   }
   const shown = Number.parseInt((await field(page, claimsYearsLabel).inputValue()).trim(), 10); // "6+" → 6
   if (await fillClaimsExperienceYears(page, shown)) changed = true;
-  if (!changed) return false;
+  return changed;
+}
+
+/** Details tab → Save. It shows no "Quote Saved" toast, so the save call itself is waited for; a warnings banner is acknowledged. */
+async function saveDetails(page: Page): Promise<void> {
   await waitForIdle(page);
-  // The Details tab shows no "Quote Saved" toast, so wait for the save call itself
   const saved = page.waitForResponse((r) => /api\/quote\/UpdateQuote/i.test(r.url()), { timeout: 60_000 });
   await clickSave(page);
   expect((await saved).ok(), 'UpdateQuote succeeded').toBeTruthy();
   await acknowledgeWarnings(page);
-  return true;
 }
 
 /**
@@ -225,6 +238,13 @@ export async function setClaimsExperience(page: Page, quoteUrl: string, years = 
  */
 export async function fillFleetPricingInputs(page: Page, quoteUrl: string): Promise<boolean> {
   await new QuotePage(page).open(quoteUrl);
+  const changed = await pricingInputFields(page);
+  if (changed) await saveDetails(page);
+  return changed;
+}
+
+/** The fields part of fillFleetPricingInputs, on the open Details tab. Returns whether anything changed (nothing is saved). */
+async function pricingInputFields(page: Page): Promise<boolean> {
   let changed = false;
 
   await expandSectionFor(page, 'Submission Information', 'Risk Postcode');
@@ -251,13 +271,20 @@ export async function fillFleetPricingInputs(page: Page, quoteUrl: string): Prom
     await page.keyboard.press('Tab');
     changed = true;
   }
-  if (!changed) return false;
-  await waitForIdle(page);
-  const saved = page.waitForResponse((r) => /api\/quote\/UpdateQuote/i.test(r.url()), { timeout: 60_000 });
-  await clickSave(page);
-  expect((await saved).ok(), 'UpdateQuote succeeded').toBeTruthy();
-  await acknowledgeWarnings(page);
-  return true;
+  return changed;
+}
+
+/**
+ * The Details inputs the Experience Call and Get Price need, in one page load and one Save (only when something changed): the claims
+ * experience above 0 (see setClaimsExperience) and Risk Postcode / UW Period Choice / UW ACCPV Pick (see fillFleetPricingInputs).
+ * Also what a renewal quote arrives without. Returns whether anything changed.
+ */
+export async function fillExperienceAndPricingInputs(page: Page, quoteUrl: string, years = fleetClaims.years): Promise<boolean> {
+  await new QuotePage(page).open(quoteUrl);
+  const claims = await claimsExperienceFields(page, years);
+  const inputs = await pricingInputFields(page);
+  if (claims || inputs) await saveDetails(page);
+  return claims || inputs;
 }
 
 /**
@@ -266,16 +293,13 @@ export async function fillFleetPricingInputs(page: Page, quoteUrl: string): Prom
  * required to proceed" and, after a change to the experience fields, "…perform an Experience Call again"; a price taken before the
  * call must be taken again ("You must Get Price again after completing the Experience Call").
  * The menu label is found by name (/Experience ?Call/), so its exact wording does not matter.
- *  - `setClaims` (default): first makes sure the claims experience is above 0 (see setClaimsExperience), while the quote is still
- *    editable at Risk Details.
+ *  - `setClaims` (default): first makes sure the claims experience is above 0 and the pricing inputs are there
+ *    (fillExperienceAndPricingInputs: one Details load and Save), while the quote is still editable at Risk Details.
  *  - `required` (default): the test fails when the action is not offered; otherwise the call is skipped when it is not on offer.
  * Returns whether the call was made.
  */
 export async function getExperienceCall(page: Page, quoteUrl: string, { required = true, setClaims = true } = {}): Promise<boolean> {
-  if (setClaims) {
-    await setClaimsExperience(page, quoteUrl);
-    await fillFleetPricingInputs(page, quoteUrl); // the other inputs Get Price insists on
-  }
+  if (setClaims) await fillExperienceAndPricingInputs(page, quoteUrl); // one Details load and Save for both
   const quote = new QuotePage(page);
   await quote.open(quoteUrl);
   if ((await listActions(page)).includes('Next Stage')) await nextStage(page);
@@ -295,15 +319,13 @@ export async function getExperienceCall(page: Page, quoteUrl: string, { required
 }
 
 /**
- * ⋮ → Get Price on a Fleet quote. A quote still at Risk Details (a fresh Model copy) gets its claims experience set above 0, is moved
- * on with Next Stage and makes the Experience Call first (see getExperienceCall); only then is it priced.
+ * ⋮ → Get Price on a Fleet quote. By default the quote first gets its claims experience and pricing inputs, Next Stage and the Experience
+ * Call (see getExperienceCall); `{ experienceCall: false }` prices straight away, after an Experience Call test of its own.
  * Fleet's schedule is vehicles, so there is no geocoding / peril score step before pricing (unlike CMBC, MTP and PPP).
  */
-export async function priceQuote(page: Page, quoteUrl: string): Promise<void> {
-  await getExperienceCall(page, quoteUrl);
-  const quote = new QuotePage(page);
-  await quote.open(quoteUrl);
-  if ((await listActions(page)).includes('Next Stage')) await nextStage(page);
+export async function priceQuote(page: Page, quoteUrl: string, { experienceCall = true } = {}): Promise<void> {
+  // getExperienceCall also moves the quote on with Next Stage; with `experienceCall: false` an earlier step (test) did both
+  if (experienceCall) await getExperienceCall(page, quoteUrl);
   const sections = new FleetSectionsPage(page);
   await sections.open(quoteUrl);
   await sections.getPrice([fleetSections.riskSection]);
@@ -319,8 +341,12 @@ export async function fillCtaRationale(page: Page, quoteUrl: string): Promise<vo
     await page.goto(quoteUrl);
     await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 30_000 });
   }).toPass({ timeout: 120_000 });
-  await page.getByText('Premium', { exact: true }).first().click();
+  // Only a renewal that inherits a CTA shows the rationale field: without it there is nothing to fill
+  const premium = page.getByText('Premium', { exact: true }).first();
+  if (!(await premium.isVisible().catch(() => false))) return;
+  await premium.click();
   const rationale = fieldContainer(page, 'Commercial Trading Adjustment Rationale');
+  if (!(await rationale.first().waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false))) return;
   await rationale.scrollIntoViewIfNeeded();
   if ((await rationale.locator('input').first().inputValue()).trim()) return;
   await rationale.locator('.k-input-button').click();
@@ -367,7 +393,14 @@ export async function getCommission(page: Page, quoteUrl: string): Promise<numbe
   let row = fleetRow();
   for (let attempt = 1; attempt <= 3; attempt++) {
     await quote.open(quoteUrl);
-    await quote.getCommission(); // dialog accepted; sections it could not rate are left unchanged
+    // dialog accepted; sections it could not rate are left unchanged
+    const connectorError = await quote.getCommission().then(() => undefined, (e: Error) => e);
+    if (connectorError) {
+      // Get Commission errored: the commission goes on by hand ("+" Broker Commission, or its blank % filled) so the quote can move
+      // on, and the error fails the test afterwards
+      await quote.addCommissionManually(fleetCommission.brokerPercent);
+      throw connectorError;
+    }
     row = await openCommissions();
     if (await row.isVisible()) break;
   }
@@ -414,4 +447,18 @@ export async function fillRenewalPricingInputs(page: Page, quoteUrl: string): Pr
   await waitForIdle(page);
   await saveAcknowledgingWarnings(page, async () => (await page.locator('.toast').filter({ hasText: 'Quote Saved' }).count()) > 0, 60_000);
   await expect(page.locator('.toast').filter({ hasText: 'Quote Saved' }).first()).toBeVisible({ timeout: 30_000 });
+}
+
+/**
+ * ⋮ → Get AXA Claims: the claims connector (EntityService … ExecuteCustomBusinessOperation/Claims Call/AxaClaimsConnector) must answer
+ * OK. The app shows no dialog for it; a warnings banner is acknowledged. Offered from Risk Details on.
+ */
+export async function getAxaClaims(page: Page, quoteUrl: string): Promise<void> {
+  const quote = new QuotePage(page);
+  await quote.open(quoteUrl);
+  const call = page.waitForResponse((r) => /ExecuteCustomBusinessOperation\/Claims(%20| )Call\/AxaClaimsConnector/i.test(r.url()), { timeout: 120_000 });
+  await businessAction(page, 'Get AXA Claims');
+  const response = await call;
+  expect(response.ok(), `Get AXA Claims answered ${response.status()}`).toBeTruthy();
+  await acknowledgeWarnings(page);
 }

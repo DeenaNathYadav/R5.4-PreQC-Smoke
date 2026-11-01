@@ -1,13 +1,13 @@
 import { chromium, test as base, expect } from '@playwright/test';
 import { ProductConfig, getProduct } from '../products';
-import { authProfileDir, restoreSessionStorage } from '../config/auth';
+import { authProfileDir, refreshSavedSession, restoreSessionStorage } from '../config/auth';
 
 export interface Diagnostics {
   consoleErrors: string[];
   serverErrors: string[];
 }
 
-export const test = base.extend<{ product: ProductConfig; diagnostics: Diagnostics }>({
+export const test = base.extend<{ product: ProductConfig; diagnostics: Diagnostics; sessionKeeper: void }>({
   // Playwright's own browser fixture, with the launch tried up to 3 times: Edge now and then crashes while starting
   // ("browserType.launch: Target page, context or browser has been closed"), which would fail the first test of a chain
   // and skip everything after it.
@@ -54,6 +54,18 @@ export const test = base.extend<{ product: ProductConfig; diagnostics: Diagnosti
     await restoreSessionStorage(context, product);
     await use(context);
   },
+
+  // After every product test that ends still signed in, its session is saved back over the one auth.setup saved (see
+  // refreshSavedSession): long runs outlive the app's tokens otherwise. Not with the Edge profile, which keeps its own session.
+  sessionKeeper: [
+    async ({ page, product }, use, testInfo) => {
+      await use();
+      if (testInfo.project.metadata.role === 'product' && !product.useEdgeProfile) {
+        await refreshSavedSession(page, product).catch(() => {});
+      }
+    },
+    { auto: true },
+  ],
 
   // Collects browser console errors and 5xx responses for every test and attaches them to the report.
   diagnostics: [

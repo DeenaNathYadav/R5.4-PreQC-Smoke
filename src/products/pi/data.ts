@@ -57,6 +57,9 @@ export const piDocument: UploadData = {
 
 // ⋮ → Declined
 export const piDecline = { reason: 'Decline - Other', description: 'PI smoke test: declined by automation' };
+// Not Taken Up / Mark as Lost: no fixed reason (the first one the list offers is used and reported); the description is mandatory
+export const piNotTakenUp = { description: 'PI smoke test: not taken up by automation' };
+export const piLost = { description: 'PI smoke test: marked as lost by automation' };
 
 // Quote → DETAILS → Commission → + (Get Commission isn't available for PI)
 export const piCommission = { brokerPercent: '12' };

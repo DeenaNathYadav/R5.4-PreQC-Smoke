@@ -8,6 +8,7 @@
     "smoke:select": "node scripts/run-smoke.mjs --interactive",
     "smoke:seq": "node scripts/run-smoke.mjs --mode sequential",
     "smoke:par": "node scripts/run-smoke.mjs --mode parallel",
+    "smoke:failed": "node scripts/run-smoke.mjs --failed",
     "smoke:pi": "node scripts/run-smoke.mjs --products pi",
     "smoke:ppp": "node scripts/run-smoke.mjs --products ppp",
     "smoke:cmbc": "node scripts/run-smoke.mjs --products cmbc",
@@ -21,7 +22,13 @@
     "login:cdp": "node scripts/login-cdp.mjs",
     "report": "playwright show-report",
     "codegen": "playwright codegen",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "tsc --noEmit && playwright test --list --forbid-only --reporter=dot",
+    "smoke:pi:failed": "node scripts/run-smoke.mjs --products pi --failed",
+    "smoke:ppp:failed": "node scripts/run-smoke.mjs --products ppp --failed",
+    "smoke:cmbc:failed": "node scripts/run-smoke.mjs --products cmbc --failed",
+    "smoke:fleet:failed": "node scripts/run-smoke.mjs --products fleet --failed",
+    "smoke:mtp:failed": "node scripts/run-smoke.mjs --products mtp --failed"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

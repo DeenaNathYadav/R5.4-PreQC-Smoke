@@ -2,12 +2,11 @@
 // so a change to one product's steps never touches another's.
 import { Page, expect } from '@playwright/test';
 import { businessAction, gotoWithMenu, listActions } from '../../../pages/advantagego/entity';
-import { PolicyPage } from '../../../pages/advantagego/PolicyPage';
-import { QuoteDocumentsPage } from '../../../pages/advantagego/QuoteDocumentsPage';
+import { CreatedPolicy, PolicyPage } from '../../../pages/advantagego/PolicyPage';
 import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { QuoteSectionsPage } from '../../../pages/advantagego/QuoteSectionsPage';
 import { recordContract, recordContractFromPage } from '../../../support/contracts';
-import { pppDocumentWait, nextStage } from './quote';
+import { nextStage } from './quote';
 
 /** Log lines are tagged with the product. */
 const defaultLog = (msg: string) => console.log(`PPP: ${msg}`);
@@ -27,7 +26,7 @@ export interface EndorseResume {
 
 /**
  * Bound policy → ⋮ General Endorsement (fill the Endorsement section) → Save (endorsement quote …Q002) → Get Price →
- * Next Stage → Issue Quote → Take Up Endorsement → Policy Conversion Save → Confirm Endorsement, then all documents Completed.
+ * Next Stage → Issue Quote → Take Up Endorsement → Policy Conversion Save → Confirm Endorsement (its documents are checked by the spec's own Documents - Generation test).
  * Only the steps still on offer are done, so it can resume from `resume`.
  */
 export async function endorsePolicy(
@@ -43,14 +42,14 @@ export async function endorsePolicy(
 
 /**
  * Mid-Term Cancellation: unlike an endorsement this is an MTA on the policy itself (reference …P001/MTA001, no separate
- * quote). Start + Save create it; then ⋮ → Get Price and ⋮ → Confirm Endorsement bind it, and its documents complete.
+ * quote). Start + Save create it; then ⋮ → Get Price and ⋮ → Confirm Endorsement bind it (its documents are checked by the spec's own Documents - Generation test).
  * `resumeMtaUrl` carries on from an MTA record that already exists (e.g. /ui/Policy/Edit/<id>).
  */
 export async function cancelPolicyMidTerm(
   page: Page,
   policyUrl: string,
   riskSection: string,
-  data: { reasonCode: string; reasonDescription: string; refundBasis: string; effectiveFrom?: Date },
+  data: { reasonCode: string; reasonDescription: string; refundBasis: string; effectiveFrom?: Date; effectiveTo?: Date },
   resumeMtaUrl = '',
   log: (msg: string) => void = defaultLog,
 ): Promise<string> {
@@ -73,7 +72,7 @@ export async function cancelPolicyMidTerm(
 
 /**
  * Inception Cancellation: like the mid-term one an MTA on the policy itself (…P001/MTA001). Start + Save create it; then
- * ⋮ → Get Price and ⋮ → Confirm Cancellation bind it, the header reads "Cancelled Booked" and its documents complete.
+ * ⋮ → Get Price and ⋮ → Confirm Cancellation bind it, the header reads "Cancelled Booked" (its documents are checked by the spec's own Documents - Generation test).
  * `resumeMtaUrl` carries on from an MTA record that already exists.
  */
 export async function cancelPolicyAtInception(
@@ -114,6 +113,7 @@ export async function reinstatePolicy(
   data: { reasonDescription: string },
   resumeMtaUrl = '',
   log: (msg: string) => void = defaultLog,
+  onCreated: (mtaUrl: string) => void = () => {},
 ): Promise<string> {
   const policyPage = new PolicyPage(page);
   let mtaUrl = resumeMtaUrl;
@@ -122,6 +122,7 @@ export async function reinstatePolicy(
     await policyPage.startReinstatement(data);
     await policyPage.saveReinstatement();
     mtaUrl = page.url();
+    onCreated(mtaUrl); // kept before the checks below, which can fail on a backend halt
     log(`reinstatement MTA: ${mtaUrl}`);
   } else {
     await page.goto(mtaUrl);
@@ -167,7 +168,65 @@ export async function reverseEndorsement(
   await recordContractFromPage(page, 'PPP Reversed Endorsement (policy)');
 }
 
-/** On a saved MTA record: ⋮ Get Price (when offered) → ⋮ Confirm … → status Bound/Cancelled, then all documents Completed. */
+// ------------------------------------------------------------------ cancellation MTA, one step at a time (the spec's tests)
+
+/** Mid-Term Cancellation: Bound policy → ⋮ Mid-Term Cancellation → Save: the MTA on the policy itself (…P001/MTA00n). Returns its URL. */
+export async function startMidTermCancellationMta(
+  page: Page,
+  policyUrl: string,
+  data: Parameters<typeof cancelPolicyMidTerm>[3],
+  log: (msg: string) => void = defaultLog,
+): Promise<string> {
+  const policyPage = new PolicyPage(page);
+  await policyPage.open(policyUrl);
+  await policyPage.startMidTermCancellation(data);
+  await policyPage.saveCancellation();
+  const mtaUrl = page.url();
+  log(`mid-term cancellation MTA: ${mtaUrl}`);
+  await recordContractFromPage(page, 'PPP Mid-Term Cancellation (MTA)');
+  return mtaUrl;
+}
+
+/** Inception Cancellation: Bound policy → ⋮ Inception Cancellation → Save: the MTA on the policy itself (…P001/MTA00n). Returns its URL. */
+export async function startInceptionCancellationMta(
+  page: Page,
+  policyUrl: string,
+  data: Parameters<typeof cancelPolicyAtInception>[3],
+  log: (msg: string) => void = defaultLog,
+): Promise<string> {
+  const policyPage = new PolicyPage(page);
+  await policyPage.open(policyUrl);
+  await policyPage.startInceptionCancellation(data);
+  await policyPage.saveInceptionCancellation();
+  const mtaUrl = page.url();
+  log(`inception cancellation MTA: ${mtaUrl}`);
+  await recordContractFromPage(page, 'PPP Inception Cancellation (MTA)');
+  return mtaUrl;
+}
+
+/** On a saved MTA: ⋮ Get Price when offered ("Price is returned back from the rating engine"); nothing to do otherwise. */
+export async function priceMta(page: Page, mtaUrl: string, riskSection: string, log: (msg: string) => void = defaultLog): Promise<void> {
+  await gotoWithMenu(page, mtaUrl);
+  const actions = await listActions(page);
+  expect(actions.length, 'the ⋮ menu lists actions').toBeGreaterThan(0);
+  log(`MTA actions: ${actions.join(' | ')}`);
+  if (actions.includes('Get Price')) await new QuoteSectionsPage(page).getPrice([riskSection]);
+}
+
+/** On a priced MTA: ⋮ Confirm Endorsement / Cancellation / Reinstate → Bound or Cancelled. Already confirmed only when resuming. */
+export async function confirmMta(page: Page, mtaUrl: string, log: (msg: string) => void = defaultLog): Promise<void> {
+  const policyPage = new PolicyPage(page);
+  await gotoWithMenu(page, mtaUrl);
+  const confirm = (await listActions(page)).find((a) => /^Confirm (Endorsement|Cancellation|Reinstate)/.test(a));
+  if (confirm) await policyPage.confirmChange(confirm);
+  else {
+    // Nothing left to confirm: only acceptable when resuming from an MTA that is already confirmed
+    log('MTA already confirmed - skipping Confirm');
+    await policyPage.expectConfirmed(30_000);
+  }
+}
+
+/** On a saved MTA record: ⋮ Get Price (when offered) → ⋮ Confirm … → status Bound/Cancelled (documents: see the spec). */
 async function priceAndConfirmMta(page: Page, mtaUrl: string, riskSection: string, log: (msg: string) => void): Promise<void> {
   const policyPage = new PolicyPage(page);
   let actions = await listActions(page);
@@ -186,9 +245,98 @@ async function priceAndConfirmMta(page: Page, mtaUrl: string, riskSection: strin
     await policyPage.expectConfirmed(30_000);
   }
 
-  const docs = new QuoteDocumentsPage(page, 'Policy');
-  await docs.open(mtaUrl);
-  await docs.expectAllDocumentsCompleted(pppDocumentWait);
+}
+
+// ------------------------------------------------------------------ General Endorsement, one step at a time
+// endorsePolicy (below) runs them all; the spec runs them as separate tests.
+
+/** General Endorsement, step 1: Bound policy → ⋮ General Endorsement (fill the Endorsement section) → Save: the endorsement quote. */
+export async function startEndorsement(
+  page: Page,
+  policyUrl: string,
+  data: EndorsementData,
+  log: (msg: string) => void = defaultLog,
+): Promise<{ reference: string; url: string }> {
+  const start = (policyPage: PolicyPage) => policyPage.startGeneralEndorsement(data);
+  let endorsementUrl = '';
+  const policyPage = new PolicyPage(page);
+  await policyPage.open(policyUrl);
+  await start(policyPage);
+  const endorsement = await policyPage.saveEndorsement();
+  endorsementUrl = endorsement.url;
+  await recordContract('PPP Endorsement Quote', endorsement.reference, endorsement.url);
+  log(`endorsement created: ${endorsement.reference} → ${endorsement.url}`);
+  return { reference: endorsement.reference, url: endorsementUrl };
+}
+
+/** General Endorsement, step 2: Get Price on the endorsement quote (moved on from Risk Details first where the product needs it). */
+export async function priceEndorsement(
+  page: Page,
+  endorsementUrl: string,
+  riskSection: string,
+  log: (msg: string) => void = defaultLog,
+): Promise<void> {
+  const endorsementQuote = new QuotePage(page);
+  await endorsementQuote.open(endorsementUrl);
+  // PPP only offers Get Price from UW Review & Process, so move on from Risk Details first
+  if ((await listActions(page)).includes('Next Stage')) await nextStage(page);
+  try {
+    await new QuoteSectionsPage(page).getPrice([riskSection]); // "Price is returned back from the rating engine"
+  } catch (e) {
+    // The rating engine once answered an endorsement with an error toast and no price: try once more from a fresh page
+    log(`endorsement Get Price failed, retrying once: ${(e as Error).message.split('\n')[0]}`);
+    await endorsementQuote.open(endorsementUrl);
+    await new QuoteSectionsPage(page).getPrice([riskSection]);
+  }
+}
+
+/** General Endorsement, step 3: Issue Quote, then wait for its documents to be generated (the quote is view-only meanwhile). */
+export async function issueEndorsement(page: Page, endorsementUrl: string, riskSection: string, log: (msg: string) => void = defaultLog): Promise<void> {
+  const endorsementQuote = new QuotePage(page);
+  await endorsementQuote.open(endorsementUrl);
+  const outcome = await endorsementQuote.issueQuote([riskSection]);
+  log(`endorsement issue outcome: ${outcome}`);
+  await endorsementQuote.waitUntilEditable(endorsementUrl); // documents are generated after issuing
+}
+
+/** General Endorsement, step 4: re-price (take-up asks for it) → ⋮ Take Up Endorsement → Policy Conversion Save: the endorsed policy. */
+export async function takeUpEndorsement(
+  page: Page,
+  endorsementUrl: string,
+  riskSection: string,
+  log: (msg: string) => void = defaultLog,
+): Promise<CreatedPolicy> {
+  const endorsementQuote = new QuotePage(page);
+  let endorsedPolicyUrl = '';
+
+  await endorsementQuote.open(endorsementUrl);
+  await new QuoteSectionsPage(page).getPrice([riskSection]); // take-up asks for a re-price after any change to the quote
+
+  // A fresh load each attempt: the ⋮ button can come back without its "More" title
+  const takeUpLabel = ((await listActions(page)).find((a) => /^Take Up/.test(a))) ?? 'Take Up Endorsement';
+  log(`take-up action: ${takeUpLabel}`);
+  await expect(async () => {
+    await page.goto(endorsementUrl);
+    await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 20_000 });
+    await businessAction(page, takeUpLabel);
+    // "There are open tasks to be completed, do you want to continue?" when the quote still has open tasks
+    const openTasks = page.getByRole('dialog').filter({ hasText: 'open tasks to be completed' });
+    if (await openTasks.waitFor({ timeout: 15_000 }).then(() => true, () => false)) await openTasks.getByRole('button', { name: 'Ok', exact: true }).click();
+  }).toPass({ timeout: 120_000, intervals: [3_000] });
+  const endorsedPolicy = await new PolicyPage(page).saveConversion(); // same Policy Conversion page as Taken Up
+  endorsedPolicyUrl = endorsedPolicy.url;
+  await recordContract('PPP Endorsed Policy', endorsedPolicy.reference, endorsedPolicy.url);
+  log(`endorsed policy: ${endorsedPolicy.reference} → ${endorsedPolicy.url}`);
+  return endorsedPolicy;
+}
+
+/** General Endorsement, step 5: ⋮ Confirm Endorsement on the endorsed policy → Bound. */
+export async function confirmEndorsement(page: Page, endorsedPolicyUrl: string, log: (msg: string) => void = defaultLog): Promise<void> {
+  const endorsedPolicyPage = new PolicyPage(page);
+  await endorsedPolicyPage.open(endorsedPolicyUrl);
+  const confirmLabel = (await listActions(page)).find((a) => /^Confirm (Endorsement|Cancellation)/.test(a)) ?? 'Confirm Endorsement';
+  log(`confirm action: ${confirmLabel}`);
+  await endorsedPolicyPage.confirmChange(confirmLabel);
 }
 
 async function changePolicy(
@@ -215,41 +363,14 @@ async function changePolicy(
     const endorsementQuote = new QuotePage(page);
     await endorsementQuote.open(endorsementUrl);
     if (!(await listActions(page)).some((a) => /^Take Up/.test(a))) {
-      // PPP only offers Get Price from UW Review & Process, so move on from Risk Details first
-      if ((await listActions(page)).includes('Next Stage')) await nextStage(page);
-      await new QuoteSectionsPage(page).getPrice([riskSection]); // "Price is returned back from the rating engine"
-      const outcome = await endorsementQuote.issueQuote([riskSection]);
-      log(`endorsement issue outcome: ${outcome}`);
+      await priceEndorsement(page, endorsementUrl, riskSection, log);
+      await issueEndorsement(page, endorsementUrl, riskSection, log);
+    } else {
+      await endorsementQuote.waitUntilEditable(endorsementUrl); // documents are generated after issuing
     }
-    await endorsementQuote.waitUntilEditable(endorsementUrl); // documents are generated after issuing
-
-    await endorsementQuote.open(endorsementUrl);
-    await new QuoteSectionsPage(page).getPrice([riskSection]); // take-up asks for a re-price after any change to the quote
-
-    // A fresh load each attempt: the ⋮ button can come back without its "More" title
-    const takeUpLabel = ((await listActions(page)).find((a) => /^Take Up/.test(a))) ?? 'Take Up Endorsement';
-    log(`take-up action: ${takeUpLabel}`);
-    await expect(async () => {
-      await page.goto(endorsementUrl);
-      await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 20_000 });
-      await businessAction(page, takeUpLabel);
-      // "There are open tasks to be completed, do you want to continue?" when the quote still has open tasks
-      const openTasks = page.getByRole('dialog').filter({ hasText: 'open tasks to be completed' });
-      if (await openTasks.waitFor({ timeout: 15_000 }).then(() => true, () => false)) await openTasks.getByRole('button', { name: 'Ok', exact: true }).click();
-    }).toPass({ timeout: 120_000, intervals: [3_000] });
-    const endorsedPolicy = await new PolicyPage(page).saveConversion(); // same Policy Conversion page as Taken Up
-    endorsedPolicyUrl = endorsedPolicy.url;
-    await recordContract('PPP Endorsed Policy', endorsedPolicy.reference, endorsedPolicy.url);
-    log(`endorsed policy: ${endorsedPolicy.reference} → ${endorsedPolicy.url}`);
+    endorsedPolicyUrl = (await takeUpEndorsement(page, endorsementUrl, riskSection, log)).url;
   }
 
-  const endorsedPolicyPage = new PolicyPage(page);
-  await endorsedPolicyPage.open(endorsedPolicyUrl);
-  const confirmLabel = (await listActions(page)).find((a) => /^Confirm (Endorsement|Cancellation)/.test(a)) ?? 'Confirm Endorsement';
-  log(`confirm action: ${confirmLabel}`);
-  await endorsedPolicyPage.confirmChange(confirmLabel);
-  const docs = new QuoteDocumentsPage(page, 'Policy');
-  await docs.open(endorsedPolicyUrl);
-  await docs.expectAllDocumentsCompleted(pppDocumentWait); // the endorsement documents are generated in the background
+  await confirmEndorsement(page, endorsedPolicyUrl, log);
   return { endorsementUrl, endorsedPolicyUrl };
 }

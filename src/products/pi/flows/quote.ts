@@ -8,6 +8,7 @@ import { QuoteSectionsPage } from '../../../pages/advantagego/QuoteSectionsPage'
 import { PiSectionsPage } from '../PiSectionsPage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
+import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { piCommission, piQuote, piSections, piSubmission, piSubmissionDetails, piTask } from '../data';
 
@@ -18,7 +19,7 @@ import { piCommission, piQuote, piSections, piSubmission, piSubmissionDetails, p
  * The PI quote every other PI quote is copied from: the quote created from the submission in the "PI - Quote" chain (or built by
  * createPiModelCopy). There is no fixed reference quote.
  */
-export const piModel = { url: '' };
+export const piModel = persisted('pi-model', { url: '' }); // kept for the run, so a failed test does not lose it
 
 /** New Submission (inception today − 10 days) → complete details → Convert to Quote: the bare quote, with no sections yet. */
 export async function createPiQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
@@ -95,8 +96,15 @@ export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSe
   await quote.waitForDocumentGeneration(quoteUrl);
 }
 
-/** An issued quote → Taken Up → Policy Conversion → Save → Confirm Cover (Bound), then all policy documents Completed. */
-export async function takeUpAndBind(page: Page, quoteUrl: string, riskSection: string, step = 'PI Policy'): Promise<CreatedPolicy> {
+/** An issued quote → Taken Up → Policy Conversion → Save → Confirm Cover (Bound), then (`checkDocuments`) all policy documents Completed. */
+export async function takeUpAndBind(
+  page: Page,
+  quoteUrl: string,
+  riskSection: string,
+  step = 'PI Policy',
+  onBound: (policy: CreatedPolicy) => void = () => {},
+  checkDocuments = true,
+): Promise<CreatedPolicy> {
   const quote = new QuotePage(page);
   await quote.open(quoteUrl);
   await quote.takeUp([riskSection]);
@@ -104,9 +112,12 @@ export async function takeUpAndBind(page: Page, quoteUrl: string, riskSection: s
   const policy = await policyPage.saveConversion();
   await recordContract(step, policy.reference, policy.url);
   await policyPage.confirmCover();
-  const docs = new QuoteDocumentsPage(page, 'Policy');
-  await docs.open(policy.url);
-  await docs.expectAllDocumentsCompleted();
+  onBound(policy); // the policy is usable even when its documents later end "In Error"
+  if (checkDocuments) {
+    const docs = new QuoteDocumentsPage(page, 'Policy');
+    await docs.open(policy.url);
+    await docs.expectAllDocumentsCompleted();
+  }
   return policy;
 }
 
@@ -118,5 +129,6 @@ export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
   await new QuotePage(page).open(copy.url);
   await new QuoteSectionsPage(page).getPrice([piSections.riskSection]);
   await issueWithSelfApproval(page, copy.url, piSections.riskSection, piTask.assignee);
-  return takeUpAndBind(page, copy.url, piSections.riskSection);
+  // Set-up policy for the cancellation / renewal tests: its documents are asserted by the Taken up quote test, not here
+  return takeUpAndBind(page, copy.url, piSections.riskSection, 'PI Policy', () => {}, false);
 }

@@ -97,6 +97,11 @@ export const cmbcCancellation = {
   effectiveFrom: cancellationDate(), // mid-term cancellation takes effect today
 };
 
+export const cmbcInceptionCancellation = {
+  reasonCode: 'Insured Request',
+  reasonDescription: 'CMBC SmokeAgent',
+};
+
 export const cmbcReinstatement = { reasonDescription: 'CMBC SmokeAgent' };
 
 export const cmbcAssignee = cmbc.env('TASK_ASSIGNEE') || 'Deena Yadav';

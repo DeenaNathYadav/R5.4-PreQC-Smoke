@@ -6,12 +6,13 @@ import {
   clickSave,
   expectTitleWithReload,
   expectToast,
+  listActions,
   referenceFromTitle,
   reloadWithMenu,
   saveAcknowledgingWarnings,
   waitForIdle,
 } from './entity';
-import { expandSectionFor, field, fieldContainer, formatDate, selectDate, selectDialogDropdown, selectDialogMulti } from './kendo';
+import { expandSectionFor, field, fieldContainer, formatDate, selectDate, selectDialogDropdown, selectDialogMulti, selectFirstDialogOption } from './kendo';
 import { QuoteSectionsPage } from './QuoteSectionsPage';
 
 const quoteId = (quoteUrl: string) => quoteUrl.match(/\/ui\/Quote\/\w+\/(\d+)/)![1];
@@ -53,30 +54,16 @@ export class QuotePage {
     await dialog.getByRole('button', { name: 'Ok', exact: true }).click();
   }
 
-  /** After a reload, DETAILS → Commission lists a "Broker Commission" deduction (proves it was saved). */
-  async expectBrokerCommission(): Promise<void> {
-    const { page } = this;
-    await page.reload();
-    const section = page.getByRole('button', { name: /^Commissions?$/ });
-    // The Details tab re-renders for a moment after it opens, so the section element can detach under the call: retry
-    await expect(async () => {
-      await section.scrollIntoViewIfNeeded({ timeout: 8_000 });
-    }).toPass({ timeout: 40_000, intervals: [1_000] });
-    const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
-    if (!(await grid.isVisible())) await section.click();
-    await expect(grid.locator('.ag-cell[col-id="DeductionTypeId"]', { hasText: 'Broker Commission' })).toBeVisible({
-      timeout: 30_000,
-    });
-  }
-
   /**
-   * PI and PPP aren't eligible for ⋮ → Get Commission, so the Broker Commission deduction is set by hand:
-   * DETAILS → Commission → the Broker Commission row's Selected % (→ Save). When the quote has no Broker Commission row yet, one is
-   * added with "+" (Deduction Type "Broker Commission"); with `requireDefaultRow` a missing row fails the test instead.
+   * DETAILS → Commissions grid, expanded. The Quote page opens on Details; on the Sections tab (unsaved sections in memory) the
+   * Details tab is switched to inside the app, so nothing is lost.
    */
-  async addBrokerCommission(percent: string, { requireDefaultRow = false } = {}): Promise<void> {
+  private async commissionsGrid(): Promise<Locator> {
     const { page } = this;
     const section = page.getByRole('button', { name: /^Commissions?$/ });
+    if (!(await section.first().isVisible().catch(() => false))) {
+      await page.getByRole('button', { name: 'Details', exact: true }).first().click().catch(() => {});
+    }
     // The Details tab re-renders for a moment after it opens, so the section element can detach under the call: retry
     await expect(async () => {
       await section.scrollIntoViewIfNeeded({ timeout: 8_000 });
@@ -84,15 +71,48 @@ export class QuotePage {
     const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
     if (!(await grid.isVisible())) await section.click();
     await expect(grid).toBeVisible();
+    return grid;
+  }
+
+  /**
+   * After a reload, DETAILS → Commission lists a "Broker Commission" deduction (proves it was saved). The grid sometimes draws its
+   * rows before the deduction types have loaded (Type and Description blank, % shown), so it is reloaded and read again.
+   */
+  async expectBrokerCommission(): Promise<void> {
+    await expect(async () => {
+      await this.page.reload();
+      await waitForIdle(this.page);
+      const grid = await this.commissionsGrid();
+      await expect(grid.locator('.ag-cell[col-id="DeductionTypeId"]', { hasText: 'Broker Commission' })).toBeVisible({
+        timeout: 20_000,
+      });
+    }).toPass({ timeout: 150_000, intervals: [2_000] });
+  }
+
+  /**
+   * PI and PPP aren't eligible for ⋮ → Get Commission, so the Broker Commission deduction is set by hand on DETAILS → Commission:
+   * - no Broker Commission row yet → one is added with "+" (Deduction Type "Broker Commission") and given `percent`;
+   * - a defaulted row with a blank Selected % → `percent`;
+   * - a defaulted row that already has a % → left as it is (no Save).
+   * With `requireDefaultRow` a missing row fails the test instead. Returns what was done.
+   */
+  async addBrokerCommission(percent: string, { requireDefaultRow = false } = {}): Promise<'added' | 'filled' | 'kept'> {
+    const { page } = this;
+    const grid = await this.commissionsGrid();
 
     const rows = grid.locator('.ag-center-cols-container .ag-row');
-    // A product can already carry a Broker Commission row (empty Override %): update it instead of adding a second one
+    // A product can already carry a Broker Commission row: update it instead of adding a second one
     const existing = rows.filter({ has: page.locator('.ag-cell[col-id="DeductionTypeId"]', { hasText: 'Broker Commission' }) });
     if (requireDefaultRow) expect(await existing.count(), 'a Broker Commission row is already defaulted on the quote').toBeGreaterThan(0);
     let row;
+    let outcome: 'added' | 'filled';
     if (await existing.count()) {
       row = existing.first();
+      const current = Number((await row.locator('.ag-cell[col-id="RatePercentage"]').innerText()).replace(/,/g, '')) || 0;
+      if (current > 0) return 'kept';
+      outcome = 'filled';
     } else {
+      outcome = 'added';
       const before = await rows.count();
       await page.locator('button[title^="Add Commission"]').click();
       await expect(rows).toHaveCount(before + 1);
@@ -124,6 +144,7 @@ export class QuotePage {
     expect((await saved).ok(), 'UpdateQuote succeeded').toBeTruthy();
     await acknowledgeWarnings(page);
     // A "…may impact the premium, please press Get Price" banner is expected now; pricing follows in the next step.
+    return outcome;
   }
 
   /**
@@ -133,14 +154,7 @@ export class QuotePage {
    */
   async fillEmptyCommissionRates(percent: string): Promise<number> {
     const { page } = this;
-    const section = page.getByRole('button', { name: /^Commissions?$/ });
-    // The Details tab re-renders for a moment after it opens, so the section element can detach under the call: retry
-    await expect(async () => {
-      await section.scrollIntoViewIfNeeded({ timeout: 8_000 });
-    }).toPass({ timeout: 40_000, intervals: [1_000] });
-    const grid = section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
-    if (!(await grid.isVisible())) await section.click();
-    await expect(grid).toBeVisible();
+    const grid = await this.commissionsGrid();
 
     const rows = grid.locator('.ag-center-cols-container .ag-row').filter({ has: page.locator('.ag-cell[col-id="DeductionTypeId"]') });
     let changed = 0;
@@ -195,6 +209,37 @@ export class QuotePage {
       await expect(dialog).toBeHidden({ timeout: 15_000 });
     }).toPass({ timeout: 120_000 });
     return [...new Set(rejected)];
+  }
+
+  /**
+   * The commission put on by hand when ⋮ → Get Commission errors: a half-open "Confirm Commission Updates" dialog is closed, the
+   * Broker Commission row is added with "+" (or its blank % filled, see addBrokerCommission) and any other empty row gets `percent`.
+   */
+  async addCommissionManually(percent: string): Promise<void> {
+    const dialog = this.page.getByRole('dialog').filter({ hasText: 'Confirm Commission Updates' }).first();
+    if (await dialog.isVisible().catch(() => false)) {
+      await dialog.getByRole('button', { name: /^(cancel|close)$/i }).first().click({ timeout: 5_000 }).catch(() => this.page.keyboard.press('Escape'));
+    }
+    await waitForIdle(this.page);
+    await this.addBrokerCommission(percent);
+    await this.fillEmptyCommissionRates(percent);
+  }
+
+  /**
+   * CMBC, MTP, Fleet: ⋮ → Get Commission, then `percent` for every row the connector left empty. When Get Commission errors, the
+   * commission is still put on by hand (addCommissionManually) so the quote can move on, and the error is returned: the caller fails
+   * its own test with it once the chain has what it needs.
+   */
+  async getCommissionOrAddManually(percent: string): Promise<{ rejected: string[]; error?: Error }> {
+    let rejected: string[];
+    try {
+      rejected = await this.getCommission();
+    } catch (error) {
+      await this.addCommissionManually(percent);
+      return { rejected: [], error: error as Error };
+    }
+    await this.fillEmptyCommissionRates(percent);
+    return { rejected };
   }
 
   /** ⋮ → Next Stage (Risk Details → UW Review & Process). Needs Broker Commission on the quote. */
@@ -323,7 +368,14 @@ export class QuotePage {
   async convertToMultiQuote(sourceQuoteUrl: string): Promise<{ reference: string; url: string }> {
     const { page } = this;
     await this.open(sourceQuoteUrl);
+    // Only an issued quote that is not taken up yet offers it (a failed-only re-run can find the chain's quote already Taken Up)
+    if (!(await listActions(page)).includes('Convert to Multi Quote')) {
+      throw new Error('⋮ has no "Convert to Multi Quote": the source quote is no longer issued-and-open (already Taken Up?). Re-run the quote chain from the start');
+    }
     await businessAction(page, 'Convert to Multi Quote');
+    const confirm = page.getByRole('dialog').filter({ hasText: /open tasks to be completed/ });
+    // Only shown while the quote still has open tasks (e.g. a task left Not Started)
+    if (await confirm.waitFor({ timeout: 10_000 }).then(() => true, () => false)) await confirm.getByRole('button', { name: 'Ok', exact: true }).click();
     await page.waitForURL('**/ui/Quote/MultiQuote', { timeout: 90_000 });
     await expect(page.locator('button[title="Save"]').first()).toBeVisible({ timeout: 60_000 });
     await waitForIdle(page);
@@ -413,15 +465,57 @@ export class QuotePage {
     await expectToast(page, 'Task Created Successfully', 'any', 60_000);
   }
 
-  /** ⋮ → Declined / Not Taken Up (same dialog shape, different reason list) → confirm. */
-  async closeQuote(action: 'Declined' | 'Not Taken Up', reason: string, description: string): Promise<void> {
+  /**
+   * ⋮ → Declined / Not Taken Up (same dialog shape, different reason list) → confirm. Both the reason and "Add additional Description"
+   * are mandatory. Without a `reason` the first one the list offers is chosen. Returns the reason used.
+   */
+  async closeQuote(action: 'Declined' | 'Not Taken Up', reason: string | undefined, description: string): Promise<string> {
     const { page } = this;
     await businessAction(page, action);
     const dialog = page.getByRole('dialog').filter({ hasText: /Mark As (Declined|Not Taken Up)/ });
     await expect(dialog).toBeVisible();
-    await selectDialogDropdown(page, dialog, action === 'Declined' ? 'Decline Reason' : 'Not Taken Up Reason', reason);
+    const label = action === 'Declined' ? 'Decline Reason' : 'Not Taken Up Reason';
+    if (reason) await selectDialogDropdown(page, dialog, label, reason);
+    else reason = await selectFirstDialogOption(page, dialog, label);
     await dialog.getByPlaceholder('Enter Text Here').last().fill(description);
     await dialog.getByRole('button', { name: action === 'Declined' ? 'Decline' : 'Not Taken Up', exact: true }).click();
+    await expect(dialog).toBeHidden({ timeout: 60_000 });
+    return reason;
+  }
+
+  /**
+   * ⋮ → Mark as Lost (offered on an issued quote) → "Risk - Mark as Lost": Loss Reason (optional; the first one offered is chosen
+   * unless `reason` is given) and the additional description → Mark as Lost. Returns the reason used.
+   */
+  async markAsLost(description: string, reason?: string): Promise<string> {
+    const { page } = this;
+    await businessAction(page, 'Mark as Lost');
+    const dialog = page.getByRole('dialog').filter({ hasText: /Mark as Lost/i });
+    await expect(dialog).toBeVisible();
+    if (reason) await selectDialogDropdown(page, dialog, 'Loss Reason', reason);
+    else reason = await selectFirstDialogOption(page, dialog, 'Loss Reason');
+    await dialog.getByPlaceholder('Enter Text Here').last().fill(description);
+    await dialog.getByRole('button', { name: 'Mark as Lost', exact: true }).click();
+    await expect(dialog).toBeHidden({ timeout: 60_000 });
+    return reason;
+  }
+
+  /**
+   * After Not Taken Up / Mark as Lost: the header status shows `status` (Not Taken Up → "Not Taken Up / Quote Issued", Lost →
+   * "Closed / Lost") and the page says "This risk was marked as … The reason recorded was '…'". The ⋮ menu keeps listing every
+   * action afterwards, so it is not checked. Returns that sentence, for the report.
+   */
+  async expectMarkedAs(quoteUrl: string, status: string): Promise<string> {
+    const notice = this.page.getByText(/This risk was marked as/i).first();
+    const header = this.page.getByRole('listitem').filter({ hasText: new RegExp(`\\b${status}\\b`) }).first();
+    await expect(async () => {
+      await this.open(quoteUrl);
+      await expect(header, `status "${status}"`).toBeVisible({ timeout: 15_000 });
+      await expect(notice).toBeVisible({ timeout: 15_000 });
+    }).toPass({ timeout: 120_000, intervals: [5_000] });
+    // The reason (in bold) is filled in a moment after the sentence shows: give it a few seconds before reading
+    await expect(notice).toContainText(/recorded was '[^']+'/, { timeout: 10_000 }).catch(() => {});
+    return (await notice.innerText()).replace(/\s+/g, ' ').trim();
   }
 
   /**

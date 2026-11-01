@@ -6,17 +6,17 @@
 
 ![Playwright](https://img.shields.io/badge/Playwright-1.63-45ba4b?logo=playwright&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)
-![Node](https://img.shields.io/badge/Node-25-5fa04e?logo=node.js&logoColor=white)
+![Node](https://img.shields.io/badge/Node-22-5fa04e?logo=node.js&logoColor=white)
 ![App](https://img.shields.io/badge/AdvantageGo-Underwriting-b8860b)
 ![PI](https://img.shields.io/badge/PI-full%20flows-2ea44f)
 ![CMBC](https://img.shields.io/badge/CMBC-full%20flows-2ea44f)
 ![MTP](https://img.shields.io/badge/MTP-full%20flows-2ea44f)
-![PPP](https://img.shields.io/badge/PPP-full%20flows-dbab09)
-![Fleet](https://img.shields.io/badge/Fleet-full%20flows-dbab09)
+![PPP](https://img.shields.io/badge/PPP-full%20flows-2ea44f)
+![Fleet](https://img.shields.io/badge/Fleet-full%20flows-2ea44f)
 
 *Developed by **Deena Yadav***
 
-[⚡ Quick start](#quick-start) · [🧭 Which command?](#which-command) · [🔀 Sequential vs parallel](#seq-par) · [🗺️ What is covered](#covered) · [🔁 Resuming](#resume) · [🔐 Sign-in](#signin) · [🩺 Troubleshooting](#troubleshooting) · [🧱 Layout](#layout)
+[🚦 PreQC gate](#gate) · [⚡ Quick start](#quick-start) · [🧭 Which command?](#which-command) · [🔀 Sequential vs parallel](#seq-par) · [🗺️ What is covered](#covered) · [🔁 Resuming](#resume) · [🔐 Sign-in](#signin) · [🩺 Troubleshooting](#troubleshooting) · [🧱 Layout](#layout) · [🛡️ Changing tests](#changing)
 
 </div>
 
@@ -33,10 +33,54 @@ cancels, reverses… and records every contract it creates.
 | **PI** | ✅ Full flows | Quote → Policy → Endorsement → Reversal → Renewal → Cancellation |
 | **CMBC** | ✅ Full flows | Quote (PDBI + Liability + schedule) → Policy → Endorsement → Renewal → Cancellation |
 | **MTP** | ✅ Full flows | Motor Trade: Quote (PDBI + Liability + Road Risks + Legal Expenses + schedule) → Policy → Endorsement → Reversal → Mid-Term & Inception Cancellation → Renewal |
-| **PPP** | 🟡 Full flows (reinstatement blocked) | UK Property Investors Protection Plan: Quote (schedule + commission) → Policy → Endorsement → Reversal → Mid-Term Cancellation → Renewal. Reinstate fails on a backend pricing halt |
-| **Fleet** | 🟡 Full flows | Fleet: Quote (schedule import + commission + **Experience Call before Get Price**) → Policy → Endorsement → Reversal → Mid-Term Cancellation → Renewal |
+| **PPP** | ✅ Full flows | UK Property Investors Protection Plan: Quote (schedule + Survey Status + commission) → Policy → Endorsement → Reversal → Mid-Term Cancellation → Reinstate → Renewal |
+| **Fleet** | ✅ Full flows | Fleet: Quote (schedule import + commission + **Experience Call before Get Price**) → Policy → Endorsement → Reversal → Mid-Term Cancellation → Renewal |
 
 > Every product lives in **its own folder** and shares no flow code with the others, so a change to one product can never break another.
+
+---
+
+<a id="gate"></a>
+
+## 🚦 PreQC gate: run before promoting a build to QC
+
+```mermaid
+flowchart LR
+  A["🛠️ Build deployed<br/>to preQC"] --> B["▶️ npm run smoke:&lt;product&gt;<br/>for each product the build touches"]
+  B --> C{"summary.md:<br/>all passed?"}
+  C -->|"✔ yes"| D["🚀 Deploy the build to QC"]
+  C -->|"✘ no"| E["🔁 npm run smoke:&lt;product&gt;:failed<br/>(environment hiccups pass here)"]
+  E --> F{"still failing?"}
+  F -->|"no"| D
+  F -->|"yes"| G["🐞 Open the trace, raise a defect<br/>with the contract ids"]
+  style D fill:#e6f6ea,stroke:#2ea44f
+  style G fill:#fde8e8,stroke:#d73a49
+```
+
+| Step | Command / where |
+|:--|:--|
+| 1. Sign in once (SSO + MFA), then **close that Edge window** | `npm run login:cdp` |
+| 2. Run the product the build changed (one at a time is safest) | `npm run smoke:pi` · `smoke:ppp` · `smoke:cmbc` · `smoke:fleet` · `smoke:mtp` |
+| 3. Read the verdict | `results/runs/<timestamp>/summary.md` (and the console's final table) |
+| 4. Something failed? Re-run only the failed + blocked tests, on the same quote/policy | `npm run smoke:<product>:failed` |
+| 5. Still failing? Open the failure's trace and raise it | `npx playwright show-trace results/runs/<timestamp>/<product>/artifacts/<test>/trace.zip` |
+
+**Go / no-go:** promote to QC when every selected product reports **passed** (✔). A **blocked** (⊘) test counts as failed: it
+didn't run because a step before it failed. Send `summary.md` and `contracts.md` with the defect, because they hold every
+quote, policy and MTA reference the run created.
+
+**Latest preQC results (build R5.4)**
+
+| Product | Tests | Last full run | Duration |
+|:--|:--:|:--|:--:|
+| PI | 63 ✔ · 0 ✘ | 01/11/2026 | ~34 min |
+| CMBC | 64 ✔ · 0 ✘ | 31/10/2026 | ~37 min |
+| MTP | 60 ✔ · 0 ✘ | 31/10/2026 | ~33 min |
+| PPP | 60 ✔ (two failures fixed and re-verified afterwards) · 1 not run: the run was stopped before *Renewal - Policy Documents - Generation* | 01/11/2026 | ~35 min |
+| Fleet | 74 ✔ (two failures fixed and re-verified afterwards) | 01/11/2026 | ~59 min |
+
+> ⏱️ One product takes **30–40 minutes** (Fleet about an hour). Several products: `npm run smoke -- --products pi,ppp` runs them one after another.
+> Don't use the AdvantageGo UI with the same account while a run is going: the app rotates tokens and the run gets signed out.
 
 ---
 
@@ -88,11 +132,23 @@ npm run smoke:select                # interactive: which products? one after ano
 | 🔑 Only **check / refresh the saved sign-in** | `npm run auth` |
 | 📋 **List** products and whether each is configured | `npm run smoke:list` |
 | 🧪 **Preview** what would run, run nothing | `npm run smoke -- --products pi,cmbc --dry-run` |
+| 🔁 Re-run **only the failed + blocked tests**, every product | `npm run smoke:failed` |
+| 🔁 Re-run **only the failed + blocked tests** of one product | `npm run smoke:pi:failed` (or `npm run smoke:failed -- --products pi,mtp`) |
 | 🛑 **Stop at the first failing product** (sequential) | add `--fail-fast` |
 | ⏭️ **Skip** the sign-in check | add `--no-auth` *(see the warning in [Troubleshooting](#troubleshooting))* |
 | 🧱 Run Playwright directly (all products, shared report) | `npx playwright test` |
 
-Shortcuts for the other products: `npm run smoke:mtp` · `smoke:ppp` · `smoke:fleet`.
+Shortcuts for the other products: `npm run smoke:mtp` · `smoke:ppp` · `smoke:fleet` (and `smoke:<key>:failed` for each).
+
+> 🔁 **Failed-only re-runs** pick up exactly the tests that failed or were *blocked* last time, and run them **on that run's quote and
+> policy** (its chain values in `results/state/<run>/`), so passed steps are not repeated. If that run's state is gone, the whole
+> sections that failed run again instead. What to redo is kept per product in `results/last-failed/<key>.json`.
+
+**Console output:** a header box (product, host, tests, workers, run id), one line per test (✔ passed · ✘ failed with the reason
+underneath · ⊘ blocked by a failed blocking step · ○ skipped), and in a terminal a live line at the bottom with a progress bar, the
+elapsed time and the test running now with what it last printed. The end shows the verdict and **total time**, a ✔ ✘ ⊘ ○ table per
+section, each failure with its trace command, and the re-run command. The runner adds a table across products with the total time
+of the whole run. What the tests print goes to `run.log` in each product's report folder.
 Anything the runner doesn't know (`--headed`, `--workers=1`, `-g "…"`, a spec path…) is passed straight to `playwright test`.
 
 <details>
@@ -149,6 +205,7 @@ flowchart TB
   The exit code is non-zero if any selected product failed.
 - 🔑 The sign-in is checked **once per login host** (PI and CMBC share one host → one check). A product whose sign-in fails is reported
   as *blocked* instead of failing every test.
+- 🔒 Products running side by side share two kinds of file, both written safely: the saved sign-in (`.auth/<host>.json`, refreshed after every test) is written to a temporary file and renamed into place, so a product starting a test never reads it half-written; what to re-run is kept per product (`results/last-failed/<key>.json`). A product run on its own works exactly as before.
 - 🧵 A product that needs a single browser (`<KEY>_USE_EDGE_PROFILE=1`, i.e. CMBC today) is held to **one worker**; in parallel mode the
   other products split the remaining CPU. An explicit `--workers=N` wins.
 
@@ -216,13 +273,13 @@ flowchart TD
 | License Check – Task Generation | ✅ | Next Stage → Issue Quote → Authority Limit warning → Acknowledge → Licence Referral task |
 | Issue Quote | ✅ | Referral forwarded to the signed-in user and approved from History → Tasks, then Issue Quote → *Quoted*. `LICENCE_SELF_APPROVE=0` waits for a real approver (`APPROVAL_WAIT_MINUTES`) |
 | **MultiQuote** | ✅ | On the **issued** quote: ⋮ → *Convert to Multi Quote* → Save → toast "MultiQuote created from Quote" → next quote of the same risk (**…Q002**, Provisional). The source quote stays Quoted |
-| Quote Taken up → Policy | ✅ | Taken Up → Policy Conversion → Save → Confirm Cover (**Bound**), then every policy document must reach *Completed* |
+| Quote Taken up → Policy | ✅ | Four tests: **Quote Taken up** (⋮ → Taken Up reaches the unsaved Policy Conversion) · **Policy Conversion** (Taken Up again → Save: policy created, quote Taken Up) · then in the *Policy* section **Confirm Cover** (**Bound**) · **Policy Documents - Generation** (every policy document *Completed*; an *In Error* document fails this test alone, with the service's error text) |
 | **Requote** | ✅ | ⋮ → *Requote* is greyed out until the quote is **Taken Up** → "open tasks, continue?" → Ok → Save → new version (**…Q003**) |
-| MTA – GE Pricing / endorsement | ✅ | General Endorsement → Save (…Q00n) → Get Price → Next Stage → Issue → Take Up Endorsement → Confirm Endorsement (Bound) → documents Completed |
+| MTA – GE Pricing / endorsement | ✅ | One test per step: `MTA - GE - Endorsement Quote` (⋮ General Endorsement → Save, …Q00n) → (Fleet: `MTA - GE - Experience Call`) → `MTA - GE - Get Pricing` → `MTA - GE - Issue Quote` (and its documents generated) → `MTA - GE - Take Up Endorsement` (re-price → Policy Conversion) → `MTA - GE - Confirm Endorsement` (Bound) → `MTA - GE Documents - Generation` |
 | **MTA – Reversal** | ✅ | On the endorsed policy: **Endorsement grid → the row's ⋮ → Reverse → Yes**. Checks header = *Reversed*, row *Bound → Reversed*, endorsement 000 (Original) still *Bound* |
-| Renewals | ✅ | Own Bound policy → Renew – Quote → Save → price → issue → take up → Bound renewal policy → General Endorsement on it |
-| Mid-Term Cancellation + Reinstate | ✅ | Own Bound policy → Cancel → Get Price → Confirm → docs; then Reinstate Contract (backend completes it, outcome checked) |
-| Decline / Not Taken Up / Mark as Lost | 🟡 | Decline is automated on its own quote; the others need a dedicated issued quote |
+| Renewals | ✅ | One test per operation: `Renewal - Base - Model Quote` → `Base - Get Pricing` → `Base - Issue Quote` → `Base - Policy Conversion` → `Base - Confirm Cover` (its own Bound policy, made the way the main one is) → `Renew Quote` → `Get Pricing` → `Issue Quote` → `Quote Taken up` → `Policy Conversion` → `Confirm Cover` → `Policy Documents - Generation` → `Renewal - MTA - GE Pricing and Confirm Endorsement` → its `GE Documents - Generation` |
+| Mid-Term Cancellation + Reinstate | ✅ | One test per step: `MTC - …` (its own Bound policy: Model Quote → Get Pricing → Issue Quote → Policy Conversion → Confirm Cover) → `MTA - Mid Term Cancellation Policy` (⋮ Mid-Term Cancellation → Save, …/MTA001) → `- Get Pricing` → `- Confirm Cancellation` → `MTA - Mid Term Cancellation Documents - Generation` → `Reinstate Policy` (⋮ Reinstate Contract → Save; the backend completes it, the outcome is checked). MTP and CMBC: `IC - …` → `MTA - Inception Cancellation Policy` → `- Get Pricing` → `- Confirm Cancellation` → its documents, the same way |
+| Decline / Not Taken Up / Mark as Lost | 🟡 | Each on its own ⋮ → Model copy (each is an end state of a quote). **Decline**. **Not Taken Up** and **Mark as Lost**: `<name> - Model Quote` → `<name> - Get Pricing` → `<name> - Issue Quote` → `<name>`, which checks the status (*Not Taken Up* / *Closed · Lost*) and the "This risk was marked as … The reason recorded was …" notice (reported). The reason is the first one the list offers. The actions themselves are proven (31/10 run); the final check was corrected after it |
 | Inception Cancellation | ⬜ | Not written (cancellations are New Business only) |
 | Data Lake – Quote / Pricing / MTA / Schedule / ALS | 🔒 | Backend payload check |
 
@@ -252,7 +309,7 @@ flowchart LR
 
 | Checklist row | Status | Notes |
 |:--|:--:|:--|
-| Submission → Convert to Quote (PDBI + Liability child sections) | ✅ | Reference quote `117365`, offering *Standard CMBC* |
+| Submission → Convert to Quote (PDBI + Liability child sections) | ✅ | Three tests: `Create Submission` → `Convert to Quote` → `Convert to Quote with PDBI and Liability child sections` (offering *Standard CMBC*, sections, details, exposures and a typed-in Selected % per section, saved together: the app keeps sections in memory only and refuses the Save while any of it is empty) → `Get Commission` (⋮ Get Commission on the saved quote). That quote is the model |
 | Create working quote from the reference model | ✅ | ⋮ → Model |
 | Insert schedule with geocoding and peril score | ✅ | Imports `CMBC/CMBC_Schedule_Import.xlsx` |
 | Get Commission · Get Pricing | ✅ | |
@@ -261,9 +318,9 @@ flowchart LR
 | Issue Quote · Taken up quote | ✅ | Next Stage first (Get Price only exists in *UW Review & Process*) |
 | General endorsement → take-up → MTA pricing | ✅ | |
 | Mid-Term Cancellation – Pricing and Reinstate | ✅ | |
-| Renewals – Pricing | 🟡 | Includes the geocode step. Last blocked by the backend document service ending *"In Error"* on fresh policies, not by the test |
-| Requote · Multi-Quote | ⬜ | Same pattern as PI is expected to work |
-| MTA – Reversal · MTA – Inception Cancellation Policy | ⬜ | |
+| Renewals – Pricing | 🟡 | Geocoding is a test of its own before every Get Pricing on a copied schedule: `Renewal - Base -`, `Renewal -`, `MTC -` and `IC - Geocoding and Peril Scoring` (Schedule ⋮ → Geocode and Get Peril Score → wizard → Save), then `… - Get Pricing` prices only. Not yet run |
+| Requote · Multi-Quote | 🟡 | Same tests as MTP (MultiQuote after Issue Quote, Requote after Policy Conversion); not yet run |
+| MTA – Reversal · MTA – Inception Cancellation Policy | 🟡 | CMBC's own copies of MTP's steps (+ `MTA - Inception Cancellation Documents - Generation`); not yet run |
 | Documents/datalake payload · Data lake · ALS & server-folder payloads | 🔒 | Backend evidence |
 
 <a id="mtp"></a>
@@ -275,7 +332,7 @@ Env: `MTP_URL`, `MTP_SCHEDULE_IMPORT`, plus the `MTP_*` resume URLs.
 
 | Checklist row | Status | Notes |
 |:--|:--:|:--|
-| Convert to Quote (PDBI, Liability, Road Risks, Legal Expenses) | ✅ | Product *Motor Trade*. Needs the Risk Validation answer *Yes*, the analysis codes (Section G / 45 / 45.1 / 45.11 / 4511100) and the Claims History fields. The offering (SME) is defaulted, **the risk sections are not**: the test adds them |
+| Convert to Quote (PDBI, Liability, Road Risks, Legal Expenses) | ✅ | Three tests: `Create Submission` → `Convert to Quote` → `Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses` (sections, details, Get Commission and Selected %, saved together: the sections stay in memory until that Save). Product *Motor Trade*. Needs the Risk Validation answer *Yes*, the analysis codes (Section G / 45 / 45.1 / 45.11 / 4511100) and the Claims History fields. The offering (SME) is defaulted, **the risk sections are not**: the test adds them |
 | Create working quote from the reference model | ✅ | ⋮ → Model |
 | Insert schedule with geocoding and peril score | ✅ | Imports `MTP/MTP_Schedule_Import.xlsx` (the file must be saved by Excel: the app's own export has non-standard cell references and the importer reads it as empty) |
 | Get Commission · Get Pricing | ✅ | Every section is listed as *not rated* in the commission dialog; the test accepts it. Next Stage answers with a warnings banner (*Selected Product Hazard*) that is acknowledged. **Get Price is only offered from the 2nd stage, UW Review & Process**, so Next Stage comes first. **Geocoding + Peril Score is mandatory before Get Price**: when the app answers *"The Geocoding for all schedule items have not been done"* the test runs *Geocode and Get Peril Score* and prices again (`getPriceGeocodingIfMissing`). Each product has its own stages and operations, which is why MTP keeps its own flows |
@@ -298,13 +355,13 @@ Own folder `src/products/ppp/` (data, `PppSectionsPage`, `flows/quote.ts`, `flow
 | Checklist row | Status | Notes |
 |:--|:--:|:--|
 | Convert to Quote | ✅ | Needs Business Type, *All buildings constructed after 01/01/2000?* = Yes and Claims History years = 0 |
-| Create working quote · Insert schedule · Get Commission · Get Pricing | ✅ | Working quote = ⋮ → Model copy of the reference quote, which already has the PPP risk section, its covers and a Broker Commission row (the test only updates that row's percentage). The schedule import has an extra *Define Mapping* notice |
-| Quote create task · Documents · History · Search | ✅ | Task type *Underwriting Referral - PPP*; the Complete click is repeated because it sometimes has no effect |
-| Issue Quote · Multi-Quote · Taken up quote · Requote | ✅ | Taken Up acknowledges the *no Survey Details* warning |
-| General endorsement → take-up → MTA pricing · MTA – Reversal | ✅ | |
-| Decline · Renewals | ✅ | |
-| Mid-Term Cancellation | ✅ | The cancellation itself works |
-| Reinstate Policy | ❌ | The reinstatement MTA halts in the backend (*Halted At : PPPV2RECPolicyReview Stage – AutoRunWorkflow : Pricing is Failed*) and Get Price opens no dialog on it. The test reports that message |
+| Create working quote · Insert schedule · Get Commission · Get Pricing | ✅ | No fixed reference quote: the quote created from the submission (offering *Standard PPP* → PPP risk section) is the model, every other PPP quote is a ⋮ → Model copy of it. The schedule (`PPP/PPP_Schedule_Import.xlsx`) already carries **General Risk Detail → Is A Survey Required? = Yes, Survey Status = Survey Completed**, so every quote has it from the start. The import has an extra *Define Mapping* notice. Commission: Broker Commission row 12% (added with + when missing) |
+| Quote create task · Documents · History · Search | ✅ | Task type *Underwriting Referral - PPP*; the assignee (`PPP_TASK_ASSIGNEE`, default Deena Yadav) is typed into the list to filter it; the Complete click is repeated because it sometimes has no effect |
+| Issue Quote · Multi-Quote · Taken up quote · Requote | ✅ | MultiQuote needs an issued quote that is **not yet Taken Up**, and clicks Ok on the "open tasks" dialog |
+| General endorsement → take-up → MTA pricing · MTA – Reversal | ✅ | GE Get Pricing reports the app's error toast when no price comes back, and tries once more |
+| Decline · Not Taken Up · Mark as Lost · Renewals | ✅ | Renewal: the *CTA rationale* is filled only when the renewal shows the field |
+| Mid-Term Cancellation | ✅ | Reason code + **Effective To = today** (Effective From left as the form pre-sets it), then Save |
+| Reinstate Policy | ✅ | Works with the cancellation above (with Effective From = today the backend halted at *PPPV2RECPolicyReview Stage – Pricing is Failed*). A cancellation can be reinstated **only once**, even after an error, so a failed-only re-run builds a fresh Bound policy and cancels it first |
 | Data lake | 🔒 | Backend evidence |
 
 ### 🧩 Fleet
@@ -314,8 +371,11 @@ Own folder `src/products/fleet/` (data, `FleetSectionsPage`, `flows/quote.ts`, `
 | Checklist row | Status | Notes |
 |:--|:--:|:--|
 | Get Commission | ✅ | ⋮ → Get Commission (Fleet is eligible) |
-| Get Experience Call | ✅ | *Number of years claims experience* (Details → Claims Experience Analysis → Years Claims Experience) is set above 0 (`fleetClaims.years`), then ⋮ → Experience Call. It runs **before Get Price** (and before Next Stage) in every pricing path, and again on endorsement quotes when offered |
-| Get Claims · CDL call · schedule add/update/delete + export · party creation | ⬜ | Not written |
+| Get Experience Call | ✅ | *Number of years claims experience* (Details → Claims Experience Analysis → Years Claims Experience) is set above 0 (`fleetClaims.years`), and the pricing inputs (Risk Postcode, UW Period Choice, UW ACCPV Pick) are filled in **one Details load and Save**, then Next Stage, then ⋮ → Experience Call. Every Fleet chain that prices has its own `… - Experience Call` test before `… - Get Pricing` (main quote, Not Taken Up / Mark as Lost copies, Renewal base and renewal quote, Cancellation base, General Endorsement), so Get Pricing only prices and no quote makes the call twice |
+| Add schedule by import · CDL call | ✅ | `Insert schedule by import (vehicle lookup)`: SCHEDULE → Import, *With Vehicle Lookup* (the CDL call enriches each registration) |
+| Get Claims | ✅ | `Fleet - Schedule and Claims` › `Get Claims`: ⋮ → Get AXA Claims, the claims connector must answer OK. Not yet run |
+| Add / Update / Delete Schedule manually · Export | ✅ | Same section, on a Model copy of its own: + Add New → registration → Save · the registration changed → Save · ticked → − Delete → Ok · Export → .xlsx. The grid can open with another row already ticked, so Delete unticks every other row first |
+| Create Individual Party / Organisation | – | Not part of the product smoke |
 | Data lake | 🔒 | Backend evidence |
 
 ## 📐 Conventions (all five products)
@@ -323,13 +383,28 @@ Own folder `src/products/fleet/` (data, `FleetSectionsPage`, `flows/quote.ts`, `
 - **No fixed reference quote** in any product: the quote created from the submission in each product's `<Product> - Quote` chain is the model, and every other quote of that product is a ⋮ → Model copy of it (built first when a worker has none).
 - **Inception date** = today − 10 days, for every new submission and every Model-copy quote (`src/support/dates.ts`). A General Endorsement
   (Effective From = inception + 10 days) therefore starts today.
-- **Mid-Term Cancellation** takes effect **today** (`effectiveFrom` in each product's cancellation data).
-- **Commission:** ⋮ → *Get Commission* for **Fleet, CMBC and MTP**; **PI and PPP** are not eligible, so the *Override %* of the already-defaulted
-  Broker Commission row is set by hand (the test fails when that row is not there). Test names: `Get Commission` / `Add Broker Commission`.
+- **Mid-Term Cancellation** takes effect **today**: `effectiveFrom` in each product's cancellation data. Exceptions: **PPP** sets `effectiveTo` = today, which its reinstatement needs, and **Fleet** sets Effective To = inception + 10 days, because its form fixes Effective From.
+- **Commission:**
+  - **PI and PPP** aren't eligible for ⋮ → *Get Commission*. DETAILS → Commission: no Broker Commission row → one is added with **+**
+    and given 12%; a defaulted row with a blank % → 12%; a row that already has a % → left as it is. Test name: `Add Broker Commission`.
+  - **Fleet, CMBC and MTP**: ⋮ → *Get Commission*, then 12% for every row the connector left empty. If Get Commission **errors**, the
+    Broker Commission is added by hand (as for PI) so the chain carries on, and the `Get Commission` test fails with the connector's error.
 - **Warnings:** every product acknowledges any warnings banner (ACKNOWLEDGE) and carries on.
+- **A failure does not stop the chain.** The flow chains run in order (`test.describe.configure({ mode: 'default' })`, not
+  `describe.serial`): after a failed test the next one still runs, in a fresh worker that reads the chain's values (quote URL, policy URL,
+  model quote …) back from `results/state/<run>/` (`src/support/runState.ts`).
+- **Blocking operations** (Convert to Quote, schedule + geocoding/peril score, Get Price, Issue Quote, Quote Taken up, Policy Conversion, Confirm Cover, Confirm
+  Endorsement): a test that cannot be done without one names it with `steps.needs('Get Pricing')` and is skipped as
+  *Blocked: "Get Pricing" failed (…)* when that step failed in this run, instead of running into a timeout. Blocks pass down the chain
+  (no Issue Quote → no Taken Up → no endorsement → no reversal). A step that was skipped or did not run (e.g. resumed with
+  `<KEY>_QUOTE_URL`) blocks nothing.
 - **Test groups:** `<Product> - Submission and conversion | Quote | Quote lifecycle | Policy | Cancellation | Renewal`, tagged `@flow` and `@<key>-flow`
   (`@smoke` is only for the quick page checks). Same step ⇒ same test name in every product (`MultiQuote`, `Requote`, `Renewals`,
-  `Quote Taken up and conversion to Policy`, `MTA - GE Pricing and Confirm Endorsement`, `MTA - Mid Term Cancellation Policy and Reinstate Policy`…).
+  `Quote Taken up`, `Policy Conversion`, `Confirm Cover`, `Policy Documents - Generation`, `MTA - GE - <step>`, `MTA - Mid Term Cancellation Policy`, `Reinstate Policy`, `MTC - <step>`,
+  `Renewal - <step>`…).
+- **Documents are their own tests.** Every transaction that generates documents (policy, endorsement, cancellation, renewal policy,
+  renewal endorsement) is followed by a `… Documents - Generation` test. A document the service could not generate (*In Error*) fails
+  that test alone, with the service's error text, and blocks nothing: the reversal, reinstatement and renewal steps still run.
 - **Contract records** are prefixed with the product (`Fleet Endorsement Quote`, `PPP Mid-Term Cancellation (MTA)`…); env variables are `<KEY>_*` (upper case).
 - Shared test PDF: `src/assets/smoke-doc.pdf`.
 
@@ -384,13 +459,47 @@ flowchart LR
 | Symptom | Cause | Fix |
 |:--|:--|:--|
 | *"browser has been closed"* at the SSO callback | The exported session file was invalidated (CMBC runs use the live Edge profile and **rotate the token**) | Run **without** `--no-auth` after a CMBC run, or `npm run login:cdp` |
-| Tests fail with *"Logging in…"* / Microsoft login pages in the middle of a long run | The SSO session expired | Re-run the remaining tests using the [resume variables](#resume) |
+| Tests fail with *"Logging in…"* / Microsoft login pages in the middle of a long run | The SSO session expired | Re-run the remaining tests with `npm run smoke:failed` (or the [resume variables](#resume)) |
+| A fresh page lands on the Dashboard, or stays blank on *"Refreshing Token"*, late in a long run | The app's tokens (about an hour) outlived the session saved at the start; the app signs in again by itself (`/ui/login?code=…`) and loses the link | Handled: after every test that ends signed in, its session is saved back (`sessionKeeper` fixture), so the next test starts with fresh tokens; the documents page also opens its link again up to 3 times |
 | A page renders blank, or the deep link lands on the Dashboard | Slow host | Handled automatically: the page is opened again up to 3 times |
+| Sign-in check fails with *"launchPersistentContext: Target page, context or browser has been closed"* (the hint about installing a browser is misleading) | The `npm run login:cdp` Edge window is still open and locks `.auth/edge-profile` | Handled: the runner closes that window (only that one) before the check. If it still happens, close it yourself and run again |
+| Sign-in check fails, Microsoft login page in the trace | The saved session expired | `npm run login:cdp`, sign in, close Edge, run again |
+| A failed-only re-run of **Reinstate Policy** times out | That cancellation was already reinstated once (an errored reinstatement counts) | Handled for PPP (it builds a new policy). Other products: run the whole Cancellation section again (`-g "Cancellation"`) |
+| Console has no colours | Output is piped / not a terminal | Set `FORCE_COLOR=1` |
 | *"Profile already in use"* | A login Edge window is still open | Close it (the runner kills only Edge windows using `.auth/edge-profile`) |
 | CMBC Get Price: *"The Geocoding … have not been done"* | Schedule not geocoded | See the [CMBC geocoding rule](#cmbc) |
 | Policy documents end **"In Error"** | Backend document service, not the test | Check the doc service; the test fails fast instead of waiting |
 | Save / Get Price / Issue shows a warnings banner | App wants an acknowledgement | Handled: the **ACKNOWLEDGE** link finishes the action |
 | *Issue Quote* waits forever | The Licence Referral needs a Level 2/3 approver | The suite self-approves; `LICENCE_SELF_APPROVE=0` waits for a real person |
+
+---
+
+<a id="other-env"></a>
+
+## 🌍 Running against another environment (e.g. QC)
+
+The code has no host hard-wired: every product reads `<KEY>_URL` from the env file.
+
+1. Create `.env.qc` next to `.env` with the QC URLs (`PI_URL=https://<qc-host>` …). Anything it leaves out is taken from `.env`.
+2. Run with `TEST_ENV=qc`, e.g. in PowerShell `$env:TEST_ENV='qc'; npm run smoke:pi`.
+3. Sign in to that host once: `npm run login:cdp -- pi` (each host has its own saved session).
+
+> ⚠️ The test data is preQC data: insured *Anjali Insured demo*, agency *Anjali,Intermediary* (7401474), the underwriters, the
+> task assignee and the schedule files in `<PRODUCT>/`. Check they exist in the target environment. If they don't, change them in
+> `src/products/<key>/data.ts`, or in an env variable where one exists (`<KEY>_TASK_ASSIGNEE`, `<KEY>_SCHEDULE_IMPORT`, `<KEY>_TASK_TYPE`).
+
+---
+
+<a id="changing"></a>
+
+## 🛡️ Changing or adding tests
+
+Read **[CONTRIBUTING.md](CONTRIBUTING.md)** before changing anything. In short:
+
+- A change stays **inside its product's folder** (`src/products/<key>/`, `tests/<key>/`). Changes to the shared page objects in
+  `src/pages/advantagego/`, the runner or the reporters need the owner's review, because they affect all five products.
+- Test data goes in `data.ts`, never inline in a spec. Locate by label/role (the Kendo helpers), never by generated ids. No fixed sleeps.
+- `npm run check` (typecheck + test listing) must pass, and the changed product must pass a full run on preQC, before the change is merged.
 
 ---
 
@@ -406,8 +515,7 @@ src/
 │   ├── platforms/advantagego.ts   login, home page and page checks shared by every AdvantageGo product
 │   ├── pi/      index.ts · data.ts · PiSectionsPage.ts · flows/quote.ts · flows/policy.ts
 │   ├── cmbc/    index.ts · data.ts · CmbcSectionsPage.ts · flows/quote.ts · flows/policy.ts   (own copies: nothing shared with PI)
-│   ├── mtp/                  full flows (data, MtpSectionsPage, flows/)
-│   └── ppp/ fleet/           config only for now
+│   ├── mtp/ ppp/ fleet/      full flows, same layout (data, <Key>SectionsPage, flows/)
 ├── pages/advantagego/        low-level page objects (quote, policy, search, documents, grids…) — the ONLY code products share
 ├── config/                   env.ts · auth.ts (session files, one login per host)
 ├── smoke/registerSmokeSuite.ts   the generic checks every product gets
