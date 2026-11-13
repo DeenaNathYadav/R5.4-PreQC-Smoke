@@ -12,7 +12,6 @@
 // (which reads src/products), so adding a product there is all it takes to make it selectable here.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { createRequire } from 'node:module';
@@ -291,13 +290,14 @@ const runId = stamp();
 const runDir = path.join(root, 'results', 'runs', runId);
 const authProjects = [...new Set(runnable.map((p) => p.authProject))];
 const passHas = (...flags) => opts.pass.some((a) => flags.some((f) => a === f || a.startsWith(`${f}=`)));
-const baseWorkers = process.env.CI ? 4 : Math.max(1, Math.floor(os.cpus().length / 2));
+// A product's flow tests are one ordered sequence (one worker); the second worker runs the smoke checks alongside (SMOKE_WORKERS overrides).
+const baseWorkers = Number(process.env.SMOKE_WORKERS) || 2;
 
 function workersFor(p) {
   if (passHas('--workers', '-j')) return [];
   const share = mode === 'parallel' ? Math.max(1, Math.floor(baseWorkers / runnable.length)) : baseWorkers;
   const n = p.maxWorkers ? Math.min(p.maxWorkers, share) : share;
-  return p.maxWorkers || mode === 'parallel' ? [`--workers=${n}`] : [];
+  return [`--workers=${n}`];
 }
 
 const runStarted = Date.now();

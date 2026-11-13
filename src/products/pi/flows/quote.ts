@@ -72,7 +72,7 @@ export async function createPiModelCopy(page: Page): Promise<{ reference: string
  * A priced quote → Next Stage → Issue Quote. The Licence Referral raised for another underwriter is forwarded to the
  * signed-in user and approved from the quote's History → Tasks, then the quote is issued and its documents generated.
  */
-export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSection: string, assignee: string): Promise<void> {
+export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSection: string): Promise<void> {
   const quote = new QuotePage(page);
   await quote.open(quoteUrl);
   const actions = await listActions(page);
@@ -81,12 +81,13 @@ export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSe
     await quote.waitUntilEditable(quoteUrl);
     return;
   }
-  await quote.nextStage(); // Risk Details → UW Review & Process
+  // Risk Details → UW Review & Process (already there when an earlier attempt advanced it: no "Next Stage" is offered then)
+  if (actions.includes('Next Stage')) await quote.nextStage();
   let outcome = await quote.issueQuote([riskSection]);
   // Each "referred" raises a Licence Referral for another underwriter: forward it to us, approve it, then issue again.
   // The status flips to Approved a moment before the approval counts, so give it a few seconds and allow a couple of rounds.
   for (let round = 0; round < 3 && outcome === 'referred'; round++) {
-    await quote.forwardTask(quoteUrl, 'Licence Referral', assignee);
+    await quote.forwardTask(quoteUrl, 'Licence Referral');
     await quote.approveLicenceReferral(quoteUrl);
     await page.waitForTimeout(15_000);
     await quote.open(quoteUrl);
@@ -128,7 +129,7 @@ export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
   const copy = await createPiModelCopy(page);
   await new QuotePage(page).open(copy.url);
   await new QuoteSectionsPage(page).getPrice([piSections.riskSection]);
-  await issueWithSelfApproval(page, copy.url, piSections.riskSection, piTask.assignee);
+  await issueWithSelfApproval(page, copy.url, piSections.riskSection);
   // Set-up policy for the cancellation / renewal tests: its documents are asserted by the Taken up quote test, not here
   return takeUpAndBind(page, copy.url, piSections.riskSection, 'PI Policy', () => {}, false);
 }

@@ -10,6 +10,7 @@ import {
   referenceFromTitle,
   reloadWithMenu,
   saveAcknowledgingWarnings,
+  signedInUserName,
   waitForIdle,
 } from './entity';
 import { expandSectionFor, field, fieldContainer, formatDate, selectDate, selectDialogDropdown, selectDialogMulti, selectFirstDialogOption } from './kendo';
@@ -24,7 +25,7 @@ export type IssueOutcome = 'issued' | 'referred';
 export interface TaskData {
   taskType: string;
   reason: string;
-  /** Person the task is assigned to (Assigned To = Individual). */
+  /** Person the task is assigned to (Assigned To = Individual); empty = the signed-in user. */
   assignee: string;
   subject: string;
 }
@@ -265,7 +266,15 @@ export class QuotePage {
   async issueQuote(riskSections: string[]): Promise<IssueOutcome> {
     const { page } = this;
     for (let attempt = 0; attempt < 3; attempt++) {
-      await businessAction(page, 'Issue Quote');
+      // The menu click is sometimes swallowed (no request goes out, no dialog): reload and click again before giving up
+      const moveFirst = page.getByRole('dialog').filter({ hasText: 'Move workflow to next stage' });
+      for (let click = 1; ; click++) {
+        await businessAction(page, 'Issue Quote');
+        if (await moveFirst.waitFor({ timeout: 20_000 }).then(() => true, () => false)) break;
+        if (click >= 3) break; // let the confirm below report what is missing
+        console.log('Issue Quote: no confirmation dialog, reloading and trying again');
+        await reloadWithMenu(page);
+      }
       await this.confirmMoveToNextStage();
 
       const issued = page.getByText('Quote Issued', { exact: true });
@@ -459,7 +468,7 @@ export class QuotePage {
     await expect(dialog).toBeVisible();
     await selectDialogDropdown(page, dialog, 'Task Type', task.taskType); // also defaults the due date
     await selectDialogMulti(page, dialog, 'Reason(s)', task.reason);
-    await selectDialogDropdown(page, dialog, 'Enter Name', task.assignee);
+    await selectDialogDropdown(page, dialog, 'Enter Name', task.assignee || (await signedInUserName(page)));
     await dialog.getByPlaceholder('Enter Text Here').first().fill(task.subject);
     await dialog.getByRole('button', { name: 'Assign', exact: true }).click();
     await expectToast(page, 'Task Created Successfully', 'any', 60_000);
@@ -520,11 +529,13 @@ export class QuotePage {
 
   /**
    * HISTORY → TASKS → task card ⋮ → Forward → "Assign to Other" (Individual) → Assign.
-   * Used to hand the Licence Referral to the signed-in user so it can be approved there (see approveTask).
+   * Hands the Licence Referral to the signed-in user so it can be approved there (see approveTask): always that user, since
+   * only the assignee can approve it.
    */
-  async forwardTask(quoteUrl: string, taskName: string, assignee: string): Promise<void> {
+  async forwardTask(quoteUrl: string, taskName: string): Promise<void> {
     const { page } = this;
     await this.openHistoryTab(quoteUrl, 'Tasks');
+    const assignee = await signedInUserName(page);
     // Each task is an <li>: its text, then a .status-action-container with the ⋮ trigger and the (hidden) menu items
     const text = page.locator('div.task-details-data').filter({ hasText: taskName }).last(); // newest: copies carry old tasks
     await expect(text).toBeVisible({ timeout: 60_000 });
@@ -538,7 +549,7 @@ export class QuotePage {
     const person = dialog.getByRole('combobox');
     await person.click();
     await person.pressSequentially(assignee, { delay: 40 });
-    await page.getByRole('option').filter({ hasText: new RegExp(`^\\s*${assignee}`) }).first().click();
+    await page.getByRole('option').filter({ hasText: new RegExp(`^\\s*${assignee.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`) }).first().click();
     await dialog.getByRole('button', { name: 'Assign', exact: true }).click();
     await expect(dialog).toBeHidden({ timeout: 30_000 });
   }

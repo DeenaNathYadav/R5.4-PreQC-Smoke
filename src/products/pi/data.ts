@@ -45,7 +45,7 @@ export const piSections: PiSectionData = {
 export const piTask: TaskData = {
   taskType: 'Underwriting Referral - PI',
   reason: 'Cover',
-  assignee: pi.env('TASK_ASSIGNEE') || 'Deena Yadav',
+  assignee: pi.env('TASK_ASSIGNEE') || '', // empty = the signed-in user
   subject: `PI smoke task ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`, // unique per run: a Model copy carries older tasks
 };
 

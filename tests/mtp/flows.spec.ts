@@ -15,7 +15,6 @@ import { createMtpModelCopy, mtpDocumentWait,
 import { mtp } from '../../src/products/mtp';
 import { MtpSectionsPage } from '../../src/products/mtp/MtpSectionsPage';
 import {
-  mtpAssignee,
   mtpCancellation,
   mtpCommission,
   mtpDocument,
@@ -70,270 +69,275 @@ const chain = persisted('mtp-chain', {
 // one of them is skipped as "Blocked" once it has failed (steps.needs); every other failure just lets the chain carry on.
 const steps = blockingSteps('mtp-chain');
 test.afterEach(async ({}, testInfo) => steps.record(testInfo));
-// One ordered sequence for the whole file, in one worker: Quote → Quote lifecycle → Policy → Cancellation → Renewal. Everything after
-// Taken Up needs the Bound policy it makes (or a Model copy of the same quote taken up the same way), so nothing runs ahead of it.
+// One ordered sequence for the whole file, in one worker (and one browser page, see src/fixtures): Quote → Policy, then the
+// sections on Model copies of their own. Running the sections side by side was tried: the Model copies are made from the Quote
+// chain's quote, which makes the app ask that quote for a new price at Taken Up, and the machine and preQC slowed down.
 test.describe.configure({ mode: 'default' });
 
-test.describe('MTP - Quote', { tag: ['@flow', '@mtp-flow'] }, () => {
+test.describe(() => {
   test.describe.configure({ mode: 'default' });
-  const ensureReference = async (page: Page) => {
-    if (chain.quoteReference) return;
-    await new QuotePage(page).open(chain.quoteUrl);
-    chain.quoteReference = (await page.title()).match(/RSK\d+Q\d+/)![0];
-  };
 
-  // New Submission (inception today − 10 days) → Submit
-  test('Create Submission', async ({ page }, testInfo) => {
-    test.setTimeout(8 * 60_000);
-    test.skip(!!mtp.env('QUOTE_URL'), 'MTP_QUOTE_URL is set');
-    const submission = await createMtpSubmission(page);
-    chain.submissionId = submission.contractId;
-    testInfo.annotations.push({ type: 'submission', description: `${submission.reference} (${submission.contractId})` });
-  });
-
-  // The submission's remaining details → Convert to Quote: the quote the rest of the chain works on
-  test('Convert to Quote', async ({ page }, testInfo) => {
-    steps.needs('Create Submission');
-    test.setTimeout(8 * 60_000);
-    test.skip(!!mtp.env('QUOTE_URL'), 'MTP_QUOTE_URL is set');
-    test.skip(chain.submissionId === undefined, 'No submission (Create Submission did not complete)');
-    const quote = await convertMtpSubmission(page, chain.submissionId!);
-    chain.quoteUrl = quote.url;
-    chain.quoteReference = quote.reference;
-    testInfo.annotations.push({ type: 'quote', description: quote.reference });
-    expect(quote.reference).toMatch(/^RSK\d+Q001$/);
-  });
-
-  // PDBI, Liability, Road Risks and Legal Expenses (the offering, SME, is defaulted) → details → ⋮ Get Commission and the Selected %
-  // the sections cannot be saved without → Save: one test, as the sections stay in memory until that Save. The model the other MTP
-  // quotes are copied from.
-  test('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses', async ({ page }, testInfo) => {
-    steps.needs('Convert to Quote');
-    test.setTimeout(12 * 60_000);
-    test.skip(!!mtp.env('QUOTE_URL'), 'MTP_QUOTE_URL is set');
-    test.skip(!chain.quoteUrl, 'No quote');
-    testInfo.annotations.push({ type: 'section validation', description: await buildMtpSections(page, chain.quoteUrl) });
-  });
-
-  test('Insert schedule with geocoding and peril score', async ({ page }) => {
-    steps.needs('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses');
-    test.setTimeout(12 * 60_000);
-    const sections = new MtpSectionsPage(page);
-    await sections.open(chain.quoteUrl);
-    await sections.importMtpSchedule(mtpScheduleFile);
-  });
-
-  test('Get Commission', async ({ page }, testInfo) => {
-    steps.needs('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses');
-    const quote = new QuotePage(page);
-    await quote.open(chain.quoteUrl);
-    // The connector leaves "not rated" sections empty: they get the broker %. When Get Commission errors, the Broker Commission is
-    // added by hand ("+", or its blank % filled) so the chain carries on, and this test then fails with the connector's error.
-    const { rejected, error } = await quote.getCommissionOrAddManually(mtpCommission.brokerPercent);
-    if (rejected.length) testInfo.annotations.push({ type: 'commission not rated', description: rejected.join(', ') });
-    mtpModel.url = chain.quoteUrl; // sections, schedule and commission are on it now: the model the other MTP quotes are copied from
-    if (error) throw error;
-  });
-
-  test('Get Pricing', async ({ page }, testInfo) => {
-    steps.needs('Insert schedule with geocoding and peril score');
-    await priceQuote(page, chain.quoteUrl);
-    const premium = await readPremium(page, chain.quoteUrl, mtpPremiumGrossLabel);
-    expect(premium.policyPeriodGross).toBeGreaterThan(0);
-    testInfo.annotations.push({ type: 'premium', description: JSON.stringify(premium) });
-  });
-
-  test('Quote Documents (automatic/manual) - Generation and Download', async ({ page }) => {
-    steps.needs('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses');
-    const docs = new QuoteDocumentsPage(page);
-    await docs.open(chain.quoteUrl);
-    await docs.attachAutomaticTerms();
-    const title = await docs.upload(mtpDocument);
-    const file = await docs.download(title);
-    expect(file.size).toBe(fs.statSync(mtpDocument.filePath).size);
-    await docs.expectDownloadedOn(title);
-  });
-
-  test('Search / Advance Search', async ({ page }) => {
-    steps.needs('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses');
-    if (!chain.quoteReference) {
+  test.describe('MTP - Quote', { tag: ['@flow', '@mtp-flow'] }, () => {
+    test.describe.configure({ mode: 'default' });
+    const ensureReference = async (page: Page) => {
+      if (chain.quoteReference) return;
       await new QuotePage(page).open(chain.quoteUrl);
       chain.quoteReference = (await page.title()).match(/RSK\d+Q\d+/)![0];
-    }
-    const search = new SearchPage(page);
-    await search.open();
-    await search.search(chain.quoteReference);
-    await search.expectResultCount('Quotes', 1);
-    await search.open();
-    await search.selectCategory('Risk-Quote');
-    await search.search(chain.quoteReference);
-    await search.openAdvancedFilters();
-    await search.fillAdvancedText('Contract Reference', chain.quoteReference);
-    await search.applyAdvancedFilters();
-    await search.expectResultCount('Quotes', 1);
+    };
+
+    // New Submission (inception today − 10 days) → Submit
+    test('Create Submission', async ({ page }, testInfo) => {
+      test.setTimeout(8 * 60_000);
+      test.skip(!!mtp.env('QUOTE_URL'), 'MTP_QUOTE_URL is set');
+      const submission = await createMtpSubmission(page);
+      chain.submissionId = submission.contractId;
+      testInfo.annotations.push({ type: 'submission', description: `${submission.reference} (${submission.contractId})` });
+    });
+
+    // The submission's remaining details → Convert to Quote: the quote the rest of the chain works on
+    test('Convert to Quote', async ({ page }, testInfo) => {
+      steps.needs('Create Submission');
+      test.setTimeout(8 * 60_000);
+      test.skip(!!mtp.env('QUOTE_URL'), 'MTP_QUOTE_URL is set');
+      test.skip(chain.submissionId === undefined, 'No submission (Create Submission did not complete)');
+      const quote = await convertMtpSubmission(page, chain.submissionId!);
+      chain.quoteUrl = quote.url;
+      chain.quoteReference = quote.reference;
+      testInfo.annotations.push({ type: 'quote', description: quote.reference });
+      expect(quote.reference).toMatch(/^RSK\d+Q001$/);
+    });
+
+    // PDBI, Liability, Road Risks and Legal Expenses (the offering, SME, is defaulted) → details → ⋮ Get Commission and the Selected %
+    // the sections cannot be saved without → Save: one test, as the sections stay in memory until that Save. The model the other MTP
+    // quotes are copied from.
+    test('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses', async ({ page }, testInfo) => {
+      steps.needs('Convert to Quote');
+      test.setTimeout(12 * 60_000);
+      test.skip(!!mtp.env('QUOTE_URL'), 'MTP_QUOTE_URL is set');
+      test.skip(!chain.quoteUrl, 'No quote');
+      testInfo.annotations.push({ type: 'section validation', description: await buildMtpSections(page, chain.quoteUrl) });
+    });
+
+    test('Insert schedule with geocoding and peril score', async ({ page }) => {
+      steps.needs('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses');
+      test.setTimeout(12 * 60_000);
+      const sections = new MtpSectionsPage(page);
+      await sections.open(chain.quoteUrl);
+      await sections.importMtpSchedule(mtpScheduleFile);
+    });
+
+    test('Get Commission', async ({ page }, testInfo) => {
+      steps.needs('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses');
+      const quote = new QuotePage(page);
+      await quote.open(chain.quoteUrl);
+      // The connector leaves "not rated" sections empty: they get the broker %. When Get Commission errors, the Broker Commission is
+      // added by hand ("+", or its blank % filled) so the chain carries on, and this test then fails with the connector's error.
+      const { rejected, error } = await quote.getCommissionOrAddManually(mtpCommission.brokerPercent);
+      if (rejected.length) testInfo.annotations.push({ type: 'commission not rated', description: rejected.join(', ') });
+      mtpModel.url = chain.quoteUrl; // sections, schedule and commission are on it now: the model the other MTP quotes are copied from
+      if (error) throw error;
+    });
+
+    test('Get Pricing', async ({ page }, testInfo) => {
+      steps.needs('Insert schedule with geocoding and peril score');
+      await priceQuote(page, chain.quoteUrl);
+      const premium = await readPremium(page, chain.quoteUrl, mtpPremiumGrossLabel);
+      expect(premium.policyPeriodGross).toBeGreaterThan(0);
+      testInfo.annotations.push({ type: 'premium', description: JSON.stringify(premium) });
+    });
+
+    test('Quote Documents (automatic/manual) - Generation and Download', async ({ page }) => {
+      steps.needs('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses');
+      const docs = new QuoteDocumentsPage(page);
+      await docs.open(chain.quoteUrl);
+      await docs.attachAutomaticTerms();
+      const title = await docs.upload(mtpDocument);
+      const file = await docs.download(title);
+      expect(file.size).toBe(fs.statSync(mtpDocument.filePath).size);
+      await docs.expectDownloadedOn(title);
+    });
+
+    test('Search / Advance Search', async ({ page }) => {
+      steps.needs('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses');
+      if (!chain.quoteReference) {
+        await new QuotePage(page).open(chain.quoteUrl);
+        chain.quoteReference = (await page.title()).match(/RSK\d+Q\d+/)![0];
+      }
+      const search = new SearchPage(page);
+      await search.open();
+      await search.search(chain.quoteReference);
+      await search.expectResultCount('Quotes', 1);
+      await search.open();
+      await search.selectCategory('Risk-Quote');
+      await search.search(chain.quoteReference);
+      await search.openAdvancedFilters();
+      await search.fillAdvancedText('Contract Reference', chain.quoteReference);
+      await search.applyAdvancedFilters();
+      await search.expectResultCount('Quotes', 1);
+    });
+
+    test('Issue Quote', async ({ page }) => {
+      steps.needs('Get Pricing');
+      test.setTimeout(12 * 60_000);
+      await issueWithSelfApproval(page, chain.quoteUrl, mtpSections.riskSections[0]);
+    });
+
+    // ⋮ → Convert to Multi Quote (offered on the issued quote) → Save creates the next quote of the same risk (…Q002).
+    test('MultiQuote', async ({ page }, testInfo) => {
+      steps.needs('Issue Quote');
+      test.setTimeout(5 * 60_000);
+      await ensureReference(page);
+      const multi = await new QuotePage(page).convertToMultiQuote(chain.quoteUrl);
+      expect(multi.reference, 'a new quote of the same risk').toMatch(/^RSK\d+Q\d+$/);
+      expect(multi.reference).not.toBe(chain.quoteReference);
+      expect(multi.reference.slice(0, 13), 'same risk as the source quote').toBe(chain.quoteReference.slice(0, 13));
+      testInfo.annotations.push({ type: 'multi quote', description: multi.reference });
+      await recordContract('MTP Multi Quote', multi.reference, multi.url);
+    });
+
+    // ⋮ → Taken Up opens the unsaved Policy Conversion (a Provisional policy, "To Take Up the quote the risk will be saved"): this checks
+    // the action gets there (open tasks, warnings, a re-price when asked). Nothing is saved yet: the quote stays Quoted and ⋮ still
+    // offers Taken Up, so "Policy Conversion" runs it again on its own page.
+    test('Quote Taken up', async ({ page }) => {
+      steps.needs('Issue Quote');
+      test.setTimeout(10 * 60_000);
+      const quote = new QuotePage(page);
+      await quote.open(chain.quoteUrl);
+      await quote.takeUp([mtpSections.riskSections[0]]);
+      await expect(page, 'Taken Up opens the Policy Conversion').toHaveURL(/\/ui\/Policy\/Conversion/);
+    });
+
+    // ⋮ → Taken Up → Policy Conversion → Save: the policy is created (Provisional) and the quote becomes Taken Up
+    test('Policy Conversion', async ({ page }, testInfo) => {
+      steps.needs('Quote Taken up');
+      test.setTimeout(10 * 60_000);
+      const quote = new QuotePage(page);
+      await quote.open(chain.quoteUrl);
+      await quote.takeUp([mtpSections.riskSections[0]]);
+      const policy = await new PolicyPage(page).saveConversion();
+      chain.convertedPolicyUrl = policy.url;
+      testInfo.annotations.push({ type: 'policy', description: policy.reference });
+      await recordContract('MTP Policy', policy.reference, policy.url);
+    });
+
+    // ⋮ → Requote is enabled once the quote is Taken Up → Ok → Save creates the new version.
+    test('Requote', async ({ page }, testInfo) => {
+      steps.needs('Policy Conversion'); // ⋮ → Requote is offered once the quote is Taken Up
+      test.setTimeout(5 * 60_000);
+      await ensureReference(page);
+      const requote = await new QuotePage(page).requote(chain.quoteUrl);
+      expect(requote.reference, 'a new quote version').toMatch(/^RSK\d+Q\d+$/);
+      expect(requote.reference).not.toBe(chain.quoteReference);
+      testInfo.annotations.push({ type: 'requote', description: requote.reference });
+      await recordContract('MTP Requote', requote.reference, requote.url);
+    });
+
+    test.fixme('Documents/datalake payload generation', async () => {});
+    test.fixme('Data lake pricing/quote/schedule', async () => {});
+    test.fixme('Check ALS and server folder payloads', async () => {});
+    test.fixme('Data Lake - Quote/Pricing/MTA/Schedule/ALS', async () => {});
   });
 
-  test('Issue Quote', async ({ page }) => {
-    steps.needs('Get Pricing');
-    test.setTimeout(12 * 60_000);
-    await issueWithSelfApproval(page, chain.quoteUrl, mtpSections.riskSections[0], mtpAssignee);
-  });
+  // In order: the reversal undoes the endorsement made by the general endorsement.
+  test.describe('MTP - Policy', { tag: ['@flow', '@mtp-flow'] }, () => {
+    test.describe.configure({ mode: 'default' });
 
-  // ⋮ → Convert to Multi Quote (offered on the issued quote) → Save creates the next quote of the same risk (…Q002).
-  test('MultiQuote', async ({ page }, testInfo) => {
-    steps.needs('Issue Quote');
-    test.setTimeout(5 * 60_000);
-    await ensureReference(page);
-    const multi = await new QuotePage(page).convertToMultiQuote(chain.quoteUrl);
-    expect(multi.reference, 'a new quote of the same risk').toMatch(/^RSK\d+Q\d+$/);
-    expect(multi.reference).not.toBe(chain.quoteReference);
-    expect(multi.reference.slice(0, 13), 'same risk as the source quote').toBe(chain.quoteReference.slice(0, 13));
-    testInfo.annotations.push({ type: 'multi quote', description: multi.reference });
-    await recordContract('MTP Multi Quote', multi.reference, multi.url);
-  });
+    // ⋮ → Confirm Cover on the converted policy: Review → On Cover, Bound / Booked. The Bound policy is what the policy tests work on.
+    test('Confirm Cover', async ({ page }) => {
+      steps.needs('Policy Conversion');
+      test.setTimeout(5 * 60_000);
+      const policyPage = new PolicyPage(page);
+      await policyPage.open(chain.convertedPolicyUrl);
+      await policyPage.confirmCover();
+      chain.policyUrl = chain.convertedPolicyUrl;
+    });
 
-  // ⋮ → Taken Up opens the unsaved Policy Conversion (a Provisional policy, "To Take Up the quote the risk will be saved"): this checks
-  // the action gets there (open tasks, warnings, a re-price when asked). Nothing is saved yet: the quote stays Quoted and ⋮ still
-  // offers Taken Up, so "Policy Conversion" runs it again on its own page.
-  test('Quote Taken up', async ({ page }) => {
-    steps.needs('Issue Quote');
-    test.setTimeout(10 * 60_000);
-    const quote = new QuotePage(page);
-    await quote.open(chain.quoteUrl);
-    await quote.takeUp([mtpSections.riskSections[0]]);
-    await expect(page, 'Taken Up opens the Policy Conversion').toHaveURL(/\/ui\/Policy\/Conversion/);
-  });
+    // The policy documents (schedule, covering letter, drafts) are generated in the background after Confirm Cover: all must end
+    // Completed. A document the service could not generate ("In Error") fails this test alone; the policy tests carry on.
+    test('Policy Documents - Generation', async ({ page }, testInfo) => {
+      steps.needs('Confirm Cover');
+      test.setTimeout(10 * 60_000);
+      const docs = new QuoteDocumentsPage(page, 'Policy');
+      await docs.open(chain.policyUrl);
+      const statuses = await docs.expectAllDocumentsCompleted(mtpDocumentWait);
+      testInfo.annotations.push({ type: 'documents', description: `${statuses.length} completed` });
+    });
 
-  // ⋮ → Taken Up → Policy Conversion → Save: the policy is created (Provisional) and the quote becomes Taken Up
-  test('Policy Conversion', async ({ page }, testInfo) => {
-    steps.needs('Quote Taken up');
-    test.setTimeout(10 * 60_000);
-    const quote = new QuotePage(page);
-    await quote.open(chain.quoteUrl);
-    await quote.takeUp([mtpSections.riskSections[0]]);
-    const policy = await new PolicyPage(page).saveConversion();
-    chain.convertedPolicyUrl = policy.url;
-    testInfo.annotations.push({ type: 'policy', description: policy.reference });
-    await recordContract('MTP Policy', policy.reference, policy.url);
-  });
+    // General Endorsement, one test per step: endorsement quote → Get Price → Issue → Take Up Endorsement (Policy
+    // Conversion) → Confirm Endorsement. MTP_ENDORSEMENT_URL carries on from an endorsement quote already started (one endorsement per
+    // policy at a time), MTP_ENDORSED_POLICY_URL from an endorsed policy.
+    test('MTA - GE - Endorsement Quote', async ({ page }, testInfo) => {
+      if (!chain.policyUrl) steps.needs('Confirm Cover'); // a Bound policy is all it needs (its documents may still have failed)
+      test.setTimeout(10 * 60_000);
+      test.skip(!!mtp.env('ENDORSEMENT_URL') || !!mtp.env('ENDORSED_POLICY_URL'), 'An existing endorsement is used (MTP_ENDORSEMENT_URL / _ENDORSED_POLICY_URL)');
+      test.skip(!chain.policyUrl, 'No Bound policy');
+      const endorsement = await startEndorsement(page, chain.policyUrl, mtpEndorsement);
+      chain.endorsementUrl = endorsement.url;
+      testInfo.annotations.push({ type: 'quote', description: endorsement.reference });
+    });
 
-  // ⋮ → Requote is enabled once the quote is Taken Up → Ok → Save creates the new version.
-  test('Requote', async ({ page }, testInfo) => {
-    steps.needs('Policy Conversion'); // ⋮ → Requote is offered once the quote is Taken Up
-    test.setTimeout(5 * 60_000);
-    await ensureReference(page);
-    const requote = await new QuotePage(page).requote(chain.quoteUrl);
-    expect(requote.reference, 'a new quote version').toMatch(/^RSK\d+Q\d+$/);
-    expect(requote.reference).not.toBe(chain.quoteReference);
-    testInfo.annotations.push({ type: 'requote', description: requote.reference });
-    await recordContract('MTP Requote', requote.reference, requote.url);
-  });
+    test('MTA - GE - Get Pricing', async ({ page }) => {
+      steps.needs('MTA - GE - Endorsement Quote');
+      test.setTimeout(10 * 60_000);
+      test.skip(!!mtp.env('ENDORSED_POLICY_URL'), 'MTP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
+      test.skip(!chain.endorsementUrl, 'No endorsement quote');
+      await priceEndorsement(page, chain.endorsementUrl, mtpSections.riskSections[0]);
+    });
 
-  test.fixme('Documents/datalake payload generation', async () => {});
-  test.fixme('Data lake pricing/quote/schedule', async () => {});
-  test.fixme('Check ALS and server folder payloads', async () => {});
-  test.fixme('Data Lake - Quote/Pricing/MTA/Schedule/ALS', async () => {});
-});
+    test('MTA - GE - Issue Quote', async ({ page }) => {
+      steps.needs('MTA - GE - Get Pricing');
+      test.setTimeout(12 * 60_000);
+      test.skip(!!mtp.env('ENDORSED_POLICY_URL'), 'MTP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
+      test.skip(!chain.endorsementUrl, 'No endorsement quote');
+      await issueEndorsement(page, chain.endorsementUrl, mtpSections.riskSections[0]);
+    });
 
-// In order: the reversal undoes the endorsement made by the general endorsement.
-test.describe('MTP - Policy', { tag: ['@flow', '@mtp-flow'] }, () => {
-  test.describe.configure({ mode: 'default' });
+    test('MTA - GE - Take Up Endorsement', async ({ page }, testInfo) => {
+      steps.needs('MTA - GE - Issue Quote');
+      test.setTimeout(10 * 60_000);
+      test.skip(!!mtp.env('ENDORSED_POLICY_URL'), 'MTP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
+      test.skip(!chain.endorsementUrl, 'No endorsement quote');
+      const endorsed = await takeUpEndorsement(page, chain.endorsementUrl, mtpSections.riskSections[0]);
+      chain.endorsementConvertedUrl = endorsed.url;
+      testInfo.annotations.push({ type: 'policy', description: endorsed.reference });
+    });
 
-  // ⋮ → Confirm Cover on the converted policy: Review → On Cover, Bound / Booked. The Bound policy is what the policy tests work on.
-  test('Confirm Cover', async ({ page }) => {
-    steps.needs('Policy Conversion');
-    test.setTimeout(5 * 60_000);
-    const policyPage = new PolicyPage(page);
-    await policyPage.open(chain.convertedPolicyUrl);
-    await policyPage.confirmCover();
-    chain.policyUrl = chain.convertedPolicyUrl;
-  });
+    test('MTA - GE - Confirm Endorsement', async ({ page }) => {
+      steps.needs('MTA - GE - Take Up Endorsement');
+      test.setTimeout(5 * 60_000);
+      const endorsedUrl = chain.endorsementConvertedUrl || mtp.env('ENDORSED_POLICY_URL');
+      test.skip(!endorsedUrl, 'No endorsed policy (Take Up Endorsement did not complete)');
+      await confirmEndorsement(page, endorsedUrl);
+      chain.endorsedPolicyUrl = endorsedUrl;
+    });
 
-  // The policy documents (schedule, covering letter, drafts) are generated in the background after Confirm Cover: all must end
-  // Completed. A document the service could not generate ("In Error") fails this test alone; the policy tests carry on.
-  test('Policy Documents - Generation', async ({ page }, testInfo) => {
-    steps.needs('Confirm Cover');
-    test.setTimeout(10 * 60_000);
-    const docs = new QuoteDocumentsPage(page, 'Policy');
-    await docs.open(chain.policyUrl);
-    const statuses = await docs.expectAllDocumentsCompleted(mtpDocumentWait);
-    testInfo.annotations.push({ type: 'documents', description: `${statuses.length} completed` });
-  });
+    // The endorsement documents: generated in the background after the confirmation, all must end Completed.
+    // A document the service could not generate ("In Error") fails this test alone; nothing else depends on it.
+    test('MTA - GE Documents - Generation', async ({ page }) => {
+      if (!chain.endorsedPolicyUrl) steps.needs('MTA - GE - Confirm Endorsement');
+      test.setTimeout(10 * 60_000);
+      test.skip(!chain.endorsedPolicyUrl, 'No endorsed policy (the general endorsement did not complete)');
+      const docs = new QuoteDocumentsPage(page, 'Policy');
+      await docs.open(chain.endorsedPolicyUrl);
+      await docs.expectAllDocumentsCompleted(mtpDocumentWait);
+    });
 
-  // General Endorsement, one test per step: endorsement quote → Get Price → Issue → Take Up Endorsement (Policy
-  // Conversion) → Confirm Endorsement. MTP_ENDORSEMENT_URL carries on from an endorsement quote already started (one endorsement per
-  // policy at a time), MTP_ENDORSED_POLICY_URL from an endorsed policy.
-  test('MTA - GE - Endorsement Quote', async ({ page }, testInfo) => {
-    if (!chain.policyUrl) steps.needs('Confirm Cover'); // a Bound policy is all it needs (its documents may still have failed)
-    test.setTimeout(10 * 60_000);
-    test.skip(!!mtp.env('ENDORSEMENT_URL') || !!mtp.env('ENDORSED_POLICY_URL'), 'An existing endorsement is used (MTP_ENDORSEMENT_URL / _ENDORSED_POLICY_URL)');
-    test.skip(!chain.policyUrl, 'No Bound policy');
-    const endorsement = await startEndorsement(page, chain.policyUrl, mtpEndorsement);
-    chain.endorsementUrl = endorsement.url;
-    testInfo.annotations.push({ type: 'quote', description: endorsement.reference });
-  });
-
-  test('MTA - GE - Get Pricing', async ({ page }) => {
-    steps.needs('MTA - GE - Endorsement Quote');
-    test.setTimeout(10 * 60_000);
-    test.skip(!!mtp.env('ENDORSED_POLICY_URL'), 'MTP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
-    test.skip(!chain.endorsementUrl, 'No endorsement quote');
-    await priceEndorsement(page, chain.endorsementUrl, mtpSections.riskSections[0]);
-  });
-
-  test('MTA - GE - Issue Quote', async ({ page }) => {
-    steps.needs('MTA - GE - Get Pricing');
-    test.setTimeout(12 * 60_000);
-    test.skip(!!mtp.env('ENDORSED_POLICY_URL'), 'MTP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
-    test.skip(!chain.endorsementUrl, 'No endorsement quote');
-    await issueEndorsement(page, chain.endorsementUrl, mtpSections.riskSections[0]);
-  });
-
-  test('MTA - GE - Take Up Endorsement', async ({ page }, testInfo) => {
-    steps.needs('MTA - GE - Issue Quote');
-    test.setTimeout(10 * 60_000);
-    test.skip(!!mtp.env('ENDORSED_POLICY_URL'), 'MTP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
-    test.skip(!chain.endorsementUrl, 'No endorsement quote');
-    const endorsed = await takeUpEndorsement(page, chain.endorsementUrl, mtpSections.riskSections[0]);
-    chain.endorsementConvertedUrl = endorsed.url;
-    testInfo.annotations.push({ type: 'policy', description: endorsed.reference });
-  });
-
-  test('MTA - GE - Confirm Endorsement', async ({ page }) => {
-    steps.needs('MTA - GE - Take Up Endorsement');
-    test.setTimeout(5 * 60_000);
-    const endorsedUrl = chain.endorsementConvertedUrl || mtp.env('ENDORSED_POLICY_URL');
-    test.skip(!endorsedUrl, 'No endorsed policy (Take Up Endorsement did not complete)');
-    await confirmEndorsement(page, endorsedUrl);
-    chain.endorsedPolicyUrl = endorsedUrl;
-  });
-
-  // The endorsement documents: generated in the background after the confirmation, all must end Completed.
-  // A document the service could not generate ("In Error") fails this test alone; nothing else depends on it.
-  test('MTA - GE Documents - Generation', async ({ page }) => {
-    if (!chain.endorsedPolicyUrl) steps.needs('MTA - GE - Confirm Endorsement');
-    test.setTimeout(10 * 60_000);
-    test.skip(!chain.endorsedPolicyUrl, 'No endorsed policy (the general endorsement did not complete)');
-    const docs = new QuoteDocumentsPage(page, 'Policy');
-    await docs.open(chain.endorsedPolicyUrl);
-    await docs.expectAllDocumentsCompleted(mtpDocumentWait);
-  });
-
-  // Endorsement grid → ⋮ → Reverse on the Bound endorsement made above
-  test('MTA - Reversal', async ({ page }) => {
-    if (!chain.endorsedPolicyUrl) steps.needs('MTA - GE - Confirm Endorsement');
-    test.setTimeout(5 * 60_000);
-    test.skip(!chain.endorsedPolicyUrl, 'No endorsed policy (the general endorsement did not complete)');
-    await reverseEndorsement(page, chain.endorsedPolicyUrl, mtpEndorsement.reasonDescription);
+    // Endorsement grid → ⋮ → Reverse on the Bound endorsement made above
+    test('MTA - Reversal', async ({ page }) => {
+      if (!chain.endorsedPolicyUrl) steps.needs('MTA - GE - Confirm Endorsement');
+      test.setTimeout(5 * 60_000);
+      test.skip(!chain.endorsedPolicyUrl, 'No endorsed policy (the general endorsement did not complete)');
+      await reverseEndorsement(page, chain.endorsedPolicyUrl, mtpEndorsement.reasonDescription);
+    });
   });
 });
 
 test.describe('MTP - Cancellation', { tag: ['@flow', '@mtp-flow'] }, () => {
+  test.describe.configure({ mode: 'default' });
   // Mid Term Cancellation on a Bound policy of its own (a Model copy of the quote made from the submission, taken through the same
   // operations, one test each), then the cancellation MTA one step at a time, its documents, and Reinstate Policy on it.
   // MTP_CANCEL_POLICY_URL cancels an existing Bound policy instead, MTP_CANCEL_MTA_URL / _REINSTATE_MTA_URL carry on from existing MTAs.
   test('MTC - Model Quote', async ({ page }, testInfo) => {
-    if (!chain.policyUrl) steps.needs('Confirm Cover'); // no policy from the main chain: no cancellation either
     test.setTimeout(10 * 60_000);
     test.skip(!!mtp.env('CANCEL_POLICY_URL') || !!mtp.env('CANCEL_MTA_URL'), 'An existing policy or cancellation MTA is used (MTP_CANCEL_POLICY_URL / _CANCEL_MTA_URL)');
     const copy = await createMtpModelCopy(page);
@@ -354,7 +358,7 @@ test.describe('MTP - Cancellation', { tag: ['@flow', '@mtp-flow'] }, () => {
     test.setTimeout(12 * 60_000);
     test.skip(!!mtp.env('CANCEL_POLICY_URL') || !!mtp.env('CANCEL_MTA_URL'), 'An existing policy or cancellation MTA is used (MTP_CANCEL_POLICY_URL / _CANCEL_MTA_URL)');
     test.skip(!chain.mtcBaseQuoteUrl, 'No Model copy');
-    await issueWithSelfApproval(page, chain.mtcBaseQuoteUrl, mtpSections.riskSections[0], mtpAssignee);
+    await issueWithSelfApproval(page, chain.mtcBaseQuoteUrl, mtpSections.riskSections[0]);
   });
 
   test('MTC - Policy Conversion', async ({ page }, testInfo) => {
@@ -431,7 +435,6 @@ test.describe('MTP - Cancellation', { tag: ['@flow', '@mtp-flow'] }, () => {
 
   // Inception Cancellation on a Bound policy of its own, the same way. MTP_INCEPTION_POLICY_URL / _INCEPTION_MTA_URL reuse existing records.
   test('IC - Model Quote', async ({ page }, testInfo) => {
-    if (!chain.policyUrl) steps.needs('Confirm Cover'); // no policy from the main chain: no cancellation either
     test.setTimeout(10 * 60_000);
     test.skip(!!mtp.env('INCEPTION_POLICY_URL') || !!mtp.env('INCEPTION_MTA_URL'), 'An existing policy or inception MTA is used (MTP_INCEPTION_POLICY_URL / _INCEPTION_MTA_URL)');
     const copy = await createMtpModelCopy(page);
@@ -452,7 +455,7 @@ test.describe('MTP - Cancellation', { tag: ['@flow', '@mtp-flow'] }, () => {
     test.setTimeout(12 * 60_000);
     test.skip(!!mtp.env('INCEPTION_POLICY_URL') || !!mtp.env('INCEPTION_MTA_URL'), 'An existing policy or inception MTA is used (MTP_INCEPTION_POLICY_URL / _INCEPTION_MTA_URL)');
     test.skip(!chain.icBaseQuoteUrl, 'No Model copy');
-    await issueWithSelfApproval(page, chain.icBaseQuoteUrl, mtpSections.riskSections[0], mtpAssignee);
+    await issueWithSelfApproval(page, chain.icBaseQuoteUrl, mtpSections.riskSections[0]);
   });
 
   test('IC - Policy Conversion', async ({ page }, testInfo) => {
@@ -530,7 +533,6 @@ test.describe('MTP - Renewal', { tag: ['@flow', '@mtp-flow'] }, () => {
   // The renewal's own Bound New Business policy, made the way the main one is: ⋮ → Model copy of the quote made from the submission →
   // Get Price → Issue Quote → Taken Up + Policy Conversion → Confirm Cover, one test each
   test('Renewal - Base - Model Quote', async ({ page }, testInfo) => {
-    if (!chain.policyUrl) steps.needs('Confirm Cover'); // no policy from the main chain: no renewal either
     test.setTimeout(10 * 60_000);
     test.skip(renewalPolicyGiven, 'MTP_RENEWAL_POLICY_URL is set');
     test.skip(!!mtp.env('RENEWAL_BASE_POLICY_URL') || !!mtp.env('RENEWAL_QUOTE_URL'), 'An existing base policy or renewal quote is used');
@@ -554,7 +556,7 @@ test.describe('MTP - Renewal', { tag: ['@flow', '@mtp-flow'] }, () => {
     test.skip(renewalPolicyGiven, 'MTP_RENEWAL_POLICY_URL is set');
     test.skip(!!mtp.env('RENEWAL_BASE_POLICY_URL') || !!mtp.env('RENEWAL_QUOTE_URL'), 'An existing base policy or renewal quote is used');
     test.skip(!chain.renewalBaseQuoteUrl, 'No Model copy');
-    await issueWithSelfApproval(page, chain.renewalBaseQuoteUrl, mtpSections.riskSections[0], mtpAssignee);
+    await issueWithSelfApproval(page, chain.renewalBaseQuoteUrl, mtpSections.riskSections[0]);
   });
 
   test('Renewal - Base - Policy Conversion', async ({ page }, testInfo) => {
@@ -614,7 +616,7 @@ test.describe('MTP - Renewal', { tag: ['@flow', '@mtp-flow'] }, () => {
     test.setTimeout(12 * 60_000);
     test.skip(renewalPolicyGiven, 'MTP_RENEWAL_POLICY_URL is set');
     test.skip(!chain.renewalQuoteUrl, 'No renewal quote');
-    await issueWithSelfApproval(page, chain.renewalQuoteUrl, mtpSections.riskSections[0], mtpAssignee);
+    await issueWithSelfApproval(page, chain.renewalQuoteUrl, mtpSections.riskSections[0]);
   });
 
   // ⋮ → Taken Up (on a renewal: "Quote Taken Up") reaches the unsaved Policy Conversion; nothing is saved yet (see "Quote Taken up")

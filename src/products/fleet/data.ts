@@ -83,7 +83,7 @@ export const fleetScheduleFile = path.resolve(
   fleet.env('SCHEDULE_IMPORT') || path.join(__dirname, '../../../FLEET/FLEET_Schedule_Import.xlsx'),
 );
 
-export const fleetAssignee = fleet.env('TASK_ASSIGNEE') || 'Deena Yadav';
+export const fleetAssignee = fleet.env('TASK_ASSIGNEE') || ''; // empty = the signed-in user
 
 // Quote → ⋮ → Create Task. Fleet has its own referral type (FLEET_TASK_TYPE overrides).
 export const fleetTask: TaskData = {

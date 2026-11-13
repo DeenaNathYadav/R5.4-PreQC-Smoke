@@ -88,6 +88,21 @@ export async function gotoWithMenu(page: Page, url: string, attempts = 3): Promi
   }
 }
 
+let signedInName = '';
+
+/**
+ * The signed-in user's display name as the top bar shows it (e.g. "Deena Yadav"), the form the task assignee lists use.
+ * Read once per worker from any app page.
+ */
+export async function signedInUserName(page: Page): Promise<string> {
+  if (signedInName) return signedInName;
+  const name = page.locator('.user-info .user-name').first();
+  await name.waitFor({ state: 'attached', timeout: 30_000 });
+  await expect(name, 'the signed-in user name in the top bar').toHaveText(/\S/, { timeout: 30_000 });
+  signedInName = ((await name.textContent()) ?? '').replace(/\s+/g, ' ').trim();
+  return signedInName;
+}
+
 /** Reloads the current page and waits for its ⋮ menu, reloading again when the page renders blank (see gotoWithMenu). */
 export async function reloadWithMenu(page: Page, attempts = 3): Promise<void> {
   for (let attempt = 1; ; attempt++) {

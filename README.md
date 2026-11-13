@@ -79,7 +79,9 @@ quote, policy and MTA reference the run created.
 | PPP | 60 ✔ (two failures fixed and re-verified afterwards) · 1 not run: the run was stopped before *Renewal - Policy Documents - Generation* | 01/11/2026 | ~35 min |
 | Fleet | 74 ✔ (two failures fixed and re-verified afterwards) | 01/11/2026 | ~59 min |
 
-> ⏱️ One product takes **30–40 minutes** (Fleet about an hour). Several products: `npm run smoke -- --products pi,ppp` runs them one after another.
+> ⏱️ One product takes **30–40 minutes** (Fleet about an hour). Its tests run in order (`SHARED_PAGE=1` in the shell
+> to try one browser page for the whole run instead of a new window per test: faster, not yet proven on a full run). Several products: `npm run smoke -- --products pi,ppp`
+> runs them one after another.
 > Don't use the AdvantageGo UI with the same account while a run is going: the app rotates tokens and the run gets signed out.
 
 ---
@@ -207,7 +209,8 @@ flowchart TB
   as *blocked* instead of failing every test.
 - 🔒 Products running side by side share two kinds of file, both written safely: the saved sign-in (`.auth/<host>.json`, refreshed after every test) is written to a temporary file and renamed into place, so a product starting a test never reads it half-written; what to re-run is kept per product (`results/last-failed/<key>.json`). A product run on its own works exactly as before.
 - 🧵 A product that needs a single browser (`<KEY>_USE_EDGE_PROFILE=1`, i.e. CMBC today) is held to **one worker**; in parallel mode the
-  other products split the remaining CPU. An explicit `--workers=N` wins.
+  other products split the remaining workers. A product gets 2 workers by default, the flows and the smoke checks
+  (`SMOKE_WORKERS=N` to change); an explicit `--workers=N` wins.
 
 ---
 
@@ -356,7 +359,7 @@ Own folder `src/products/ppp/` (data, `PppSectionsPage`, `flows/quote.ts`, `flow
 |:--|:--:|:--|
 | Convert to Quote | ✅ | Needs Business Type, *All buildings constructed after 01/01/2000?* = Yes and Claims History years = 0 |
 | Create working quote · Insert schedule · Get Commission · Get Pricing | ✅ | No fixed reference quote: the quote created from the submission (offering *Standard PPP* → PPP risk section) is the model, every other PPP quote is a ⋮ → Model copy of it. The schedule (`PPP/PPP_Schedule_Import.xlsx`) already carries **General Risk Detail → Is A Survey Required? = Yes, Survey Status = Survey Completed**, so every quote has it from the start. The import has an extra *Define Mapping* notice. Commission: Broker Commission row 12% (added with + when missing) |
-| Quote create task · Documents · History · Search | ✅ | Task type *Underwriting Referral - PPP*; the assignee (`PPP_TASK_ASSIGNEE`, default Deena Yadav) is typed into the list to filter it; the Complete click is repeated because it sometimes has no effect |
+| Quote create task · Documents · History · Search | ✅ | Task type *Underwriting Referral - PPP*; the assignee (`PPP_TASK_ASSIGNEE`, default: the signed-in user) is typed into the list to filter it; the Complete click is repeated because it sometimes has no effect |
 | Issue Quote · Multi-Quote · Taken up quote · Requote | ✅ | MultiQuote needs an issued quote that is **not yet Taken Up**, and clicks Ok on the "open tasks" dialog |
 | General endorsement → take-up → MTA pricing · MTA – Reversal | ✅ | GE Get Pricing reports the app's error toast when no price comes back, and tries once more |
 | Decline · Not Taken Up · Mark as Lost · Renewals | ✅ | Renewal: the *CTA rationale* is filled only when the renewal shows the field |

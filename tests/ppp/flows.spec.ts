@@ -13,7 +13,6 @@ import { pppDocumentWait, fillCtaRationale,
 import { ppp } from '../../src/products/ppp';
 import { PppSectionsPage } from '../../src/products/ppp/PppSectionsPage';
 import {
-  pppAssignee,
   pppCancellation,
   pppCommission,
   pppDecline, pppNotTakenUp, pppLost,
@@ -75,196 +74,295 @@ const chain = persisted('ppp-chain', {
 // one of them is skipped as "Blocked" once it has failed (steps.needs); every other failure just lets the chain carry on.
 const steps = blockingSteps('ppp-chain');
 test.afterEach(async ({}, testInfo) => steps.record(testInfo));
-// One ordered sequence for the whole file, in one worker: Quote → Quote lifecycle → Policy → Cancellation → Renewal. Everything after
-// Taken Up needs the Bound policy it makes (or a Model copy of the same quote taken up the same way), so nothing runs ahead of it.
+// One ordered sequence for the whole file, in one worker (and one browser page, see src/fixtures): Quote → Policy, then the
+// sections on Model copies of their own. Running the sections side by side was tried: the Model copies are made from the Quote
+// chain's quote, which makes the app ask that quote for a new price at Taken Up, and the machine and preQC slowed down.
 test.describe.configure({ mode: 'default' });
 
-test.describe('PPP - Quote', { tag: ['@flow', '@ppp-flow'] }, () => {
+test.describe(() => {
   test.describe.configure({ mode: 'default' });
-  const ensureReference = async (page: Page) => {
-    if (chain.quoteReference) return;
-    await new QuotePage(page).open(chain.quoteUrl);
-    chain.quoteReference = (await page.title()).match(/RSK\d+Q\d+/)![0];
-  };
 
-  // New Submission (inception today − 10 days) → Convert to Quote: the quote the rest of the chain works on, and the model the other
-  // PPP quotes are copied from
-  test('Convert to Quote', async ({ page }, testInfo) => {
-    test.setTimeout(8 * 60_000);
-    test.skip(!!ppp.env('QUOTE_URL'), 'PPP_QUOTE_URL is set');
-    const quote = await createPppSubmissionQuote(page);
-    chain.quoteUrl = quote.url;
-    chain.quoteReference = quote.reference;
-    testInfo.annotations.push({ type: 'quote', description: quote.reference });
-    expect(quote.reference).toMatch(/^RSK\d+Q001$/);
-  });
+  test.describe('PPP - Quote', { tag: ['@flow', '@ppp-flow'] }, () => {
+    test.describe.configure({ mode: 'default' });
+    const ensureReference = async (page: Page) => {
+      if (chain.quoteReference) return;
+      await new QuotePage(page).open(chain.quoteUrl);
+      chain.quoteReference = (await page.title()).match(/RSK\d+Q\d+/)![0];
+    };
 
-  // Offering (the first one listed) → PPP risk section; Save lists what the covers still need
-  test('Add PPP risk section and covers', async ({ page }, testInfo) => {
-    steps.needs('Convert to Quote');
-    test.setTimeout(8 * 60_000);
-    const { offering, validation } = await new PppSectionsPage(page).addPppSections(chain.quoteUrl, pppSections, pppCommission.brokerPercent);
-    testInfo.annotations.push({ type: 'offering', description: offering });
-    testInfo.annotations.push({ type: 'section validation', description: validation });
-  });
+    // New Submission (inception today − 10 days) → Convert to Quote: the quote the rest of the chain works on, and the model the other
+    // PPP quotes are copied from
+    test('Convert to Quote', async ({ page }, testInfo) => {
+      test.setTimeout(8 * 60_000);
+      test.skip(!!ppp.env('QUOTE_URL'), 'PPP_QUOTE_URL is set');
+      const quote = await createPppSubmissionQuote(page);
+      chain.quoteUrl = quote.url;
+      chain.quoteReference = quote.reference;
+      testInfo.annotations.push({ type: 'quote', description: quote.reference });
+      expect(quote.reference).toMatch(/^RSK\d+Q001$/);
+    });
 
-  test('Insert schedule with geocoding and peril score', async ({ page }) => {
-    steps.needs('Add PPP risk section and covers');
-    test.setTimeout(12 * 60_000);
-    const sections = new PppSectionsPage(page);
-    await sections.open(chain.quoteUrl);
-    await sections.importPppSchedule(pppScheduleFile);
-  });
+    // Offering (the first one listed) → PPP risk section; Save lists what the covers still need
+    test('Add PPP risk section and covers', async ({ page }, testInfo) => {
+      steps.needs('Convert to Quote');
+      test.setTimeout(8 * 60_000);
+      const { offering, validation } = await new PppSectionsPage(page).addPppSections(chain.quoteUrl, pppSections, pppCommission.brokerPercent);
+      testInfo.annotations.push({ type: 'offering', description: offering });
+      testInfo.annotations.push({ type: 'section validation', description: validation });
+    });
 
-  // PPP is not eligible for ⋮ → Get Commission. Broker Commission is a deduction on Details → Commission: the row defaulted on the
-  // quote (checked) gets its Override %
-  test('Add Broker Commission', async ({ page }) => {
-    steps.needs('Convert to Quote');
-    const quote = new QuotePage(page);
-    await quote.open(chain.quoteUrl);
-    await quote.addBrokerCommission(pppCommission.brokerPercent); // existing Broker Commission row → its %, otherwise a row is added with +
-    await quote.expectBrokerCommission();
-    pppModel.url = chain.quoteUrl; // sections, schedule and commission are on it now: the model the other PPP quotes are copied from
-  });
+    test('Insert schedule with geocoding and peril score', async ({ page }) => {
+      steps.needs('Add PPP risk section and covers');
+      test.setTimeout(12 * 60_000);
+      const sections = new PppSectionsPage(page);
+      await sections.open(chain.quoteUrl);
+      await sections.importPppSchedule(pppScheduleFile);
+    });
 
-  test('Get Pricing', async ({ page }, testInfo) => {
-    steps.needs('Add PPP risk section and covers', 'Insert schedule with geocoding and peril score');
-    await priceQuote(page, chain.quoteUrl);
-    const premium = await readPremium(page, chain.quoteUrl, pppPremiumGrossLabel);
-    expect(premium.policyPeriodGross, 'Policy Period Premium Gross of Comm. & Net of IPT').toBeGreaterThan(0);
-    testInfo.annotations.push({ type: 'premium', description: JSON.stringify(premium) });
-  });
+    // PPP is not eligible for ⋮ → Get Commission. Broker Commission is a deduction on Details → Commission: the row defaulted on the
+    // quote (checked) gets its Override %
+    test('Add Broker Commission', async ({ page }) => {
+      steps.needs('Convert to Quote');
+      const quote = new QuotePage(page);
+      await quote.open(chain.quoteUrl);
+      await quote.addBrokerCommission(pppCommission.brokerPercent); // existing Broker Commission row → its %, otherwise a row is added with +
+      await quote.expectBrokerCommission();
+      pppModel.url = chain.quoteUrl; // sections, schedule and commission are on it now: the model the other PPP quotes are copied from
+    });
 
-  test('Quote create task', async ({ page }) => {
-    steps.needs('Convert to Quote');
-    test.setTimeout(12 * 60_000); // the task status takes minutes to flip on this host
-    const quote = new QuotePage(page);
-    await quote.open(chain.quoteUrl);
-    await quote.createTask(pppTask);
-    expect(await quote.taskStatus(chain.quoteUrl, pppTask.taskType, pppTask.subject)).toBe('Not Started');
-    // Close the task again: card ⋮ → Complete
-    // The Complete click sometimes has no effect (the card stays "Not Started", as with Approve): repeat it, 80 seconds apiece
-    await expect(async () => {
-      await quote.approveTask(chain.quoteUrl, pppTask.taskType, 'Complete', pppTask.subject);
-      await expect
-        .poll(() => quote.taskStatus(chain.quoteUrl, pppTask.taskType, pppTask.subject), { timeout: 80_000, intervals: [10_000] })
-        .toBe('Completed');
-    }).toPass({ timeout: 6 * 60_000 });
-  });
+    test('Get Pricing', async ({ page }, testInfo) => {
+      steps.needs('Add PPP risk section and covers', 'Insert schedule with geocoding and peril score');
+      await priceQuote(page, chain.quoteUrl);
+      const premium = await readPremium(page, chain.quoteUrl, pppPremiumGrossLabel);
+      expect(premium.policyPeriodGross, 'Policy Period Premium Gross of Comm. & Net of IPT').toBeGreaterThan(0);
+      testInfo.annotations.push({ type: 'premium', description: JSON.stringify(premium) });
+    });
 
-  test('Quote Documents (automatic/manual) - Generation and Download', async ({ page }) => {
-    steps.needs('Convert to Quote');
-    const docs = new QuoteDocumentsPage(page);
-    await docs.open(chain.quoteUrl);
-    await docs.attachAutomaticTerms();
-    const title = await docs.upload(pppDocument);
-    const file = await docs.download(title);
-    expect(file.size, 'downloaded bytes').toBe(fs.statSync(pppDocument.filePath).size);
-    await docs.expectDownloadedOn(title);
-  });
+    test('Quote create task', async ({ page }) => {
+      steps.needs('Convert to Quote');
+      test.setTimeout(12 * 60_000); // the task status takes minutes to flip on this host
+      const quote = new QuotePage(page);
+      await quote.open(chain.quoteUrl);
+      await quote.createTask(pppTask);
+      expect(await quote.taskStatus(chain.quoteUrl, pppTask.taskType, pppTask.subject)).toBe('Not Started');
+      // Close the task again: card ⋮ → Complete
+      // The Complete click sometimes has no effect (the card stays "Not Started", as with Approve): repeat it, 80 seconds apiece
+      await expect(async () => {
+        await quote.approveTask(chain.quoteUrl, pppTask.taskType, 'Complete', pppTask.subject);
+        await expect
+          .poll(() => quote.taskStatus(chain.quoteUrl, pppTask.taskType, pppTask.subject), { timeout: 80_000, intervals: [10_000] })
+          .toBe('Completed');
+      }).toPass({ timeout: 6 * 60_000 });
+    });
 
-  test('Quote History Check and Link Tasks', async ({ page }) => {
-    steps.needs('Convert to Quote');
-    await ensureReference(page);
-    const quote = new QuotePage(page);
-    await quote.openHistoryTab(chain.quoteUrl, 'Timeline');
-    await expect(page.getByText('UpdateQuote', { exact: true }).locator('visible=true').first()).toBeVisible();
-    await expect(page.getByText('Price', { exact: true }).locator('visible=true').first()).toBeVisible();
+    test('Quote Documents (automatic/manual) - Generation and Download', async ({ page }) => {
+      steps.needs('Convert to Quote');
+      const docs = new QuoteDocumentsPage(page);
+      await docs.open(chain.quoteUrl);
+      await docs.attachAutomaticTerms();
+      const title = await docs.upload(pppDocument);
+      const file = await docs.download(title);
+      expect(file.size, 'downloaded bytes').toBe(fs.statSync(pppDocument.filePath).size);
+      await docs.expectDownloadedOn(title);
+    });
 
-    // A Model copy has no submission link: the Links tab lists the quote itself as the Original
-    await quote.openHistoryTab(chain.quoteUrl, 'Links');
-    await expect(page.getByText(chain.quoteReference, { exact: true }).locator('visible=true').first()).toBeVisible();
-    await expect(page.getByText('Original', { exact: true }).locator('visible=true').first()).toBeVisible();
+    test('Quote History Check and Link Tasks', async ({ page }) => {
+      steps.needs('Convert to Quote');
+      await ensureReference(page);
+      const quote = new QuotePage(page);
+      await quote.openHistoryTab(chain.quoteUrl, 'Timeline');
+      await expect(page.getByText('UpdateQuote', { exact: true }).locator('visible=true').first()).toBeVisible();
+      await expect(page.getByText('Price', { exact: true }).locator('visible=true').first()).toBeVisible();
 
-    expect(await quote.taskStatus(chain.quoteUrl, pppTask.taskType, pppTask.subject)).toBe('Completed');
-  });
+      // A Model copy has no submission link: the Links tab lists the quote itself as the Original
+      await quote.openHistoryTab(chain.quoteUrl, 'Links');
+      await expect(page.getByText(chain.quoteReference, { exact: true }).locator('visible=true').first()).toBeVisible();
+      await expect(page.getByText('Original', { exact: true }).locator('visible=true').first()).toBeVisible();
 
-  test('Search / Advance Search', async ({ page }) => {
-    steps.needs('Convert to Quote');
-    await ensureReference(page);
-    const search = new SearchPage(page);
-    await search.open();
-    await search.search(chain.quoteReference);
-    await search.expectResultCount('Quotes', 1);
+      expect(await quote.taskStatus(chain.quoteUrl, pppTask.taskType, pppTask.subject)).toBe('Completed');
+    });
 
-    // The results panel occasionally doesn't render after Apply, so retry the whole search
-    await expect(async () => {
+    test('Search / Advance Search', async ({ page }) => {
+      steps.needs('Convert to Quote');
+      await ensureReference(page);
+      const search = new SearchPage(page);
       await search.open();
-      await search.selectCategory('Risk-Quote');
       await search.search(chain.quoteReference);
-      await search.openAdvancedFilters();
-      await search.fillAdvancedText('Contract Reference', chain.quoteReference);
-      await search.applyAdvancedFilters();
-      await search.expectResultCount('Quotes', 1, 20_000);
-    }).toPass({ timeout: 120_000 });
+      await search.expectResultCount('Quotes', 1);
+
+      // The results panel occasionally doesn't render after Apply, so retry the whole search
+      await expect(async () => {
+        await search.open();
+        await search.selectCategory('Risk-Quote');
+        await search.search(chain.quoteReference);
+        await search.openAdvancedFilters();
+        await search.fillAdvancedText('Contract Reference', chain.quoteReference);
+        await search.applyAdvancedFilters();
+        await search.expectResultCount('Quotes', 1, 20_000);
+      }).toPass({ timeout: 120_000 });
+    });
+
+    // Licence Referral raised for another underwriter is forwarded to the signed-in user and approved, then the quote is issued
+    test('Issue Quote', async ({ page }) => {
+      steps.needs('Get Pricing');
+      test.setTimeout(12 * 60_000);
+      await issueWithSelfApproval(page, chain.quoteUrl, pppSections.riskSection);
+      chain.quoteIssued = true;
+    });
+
+    // ⋮ → Convert to Multi Quote (offered on the issued quote) → Save creates the next quote of the same risk (…Q002)
+    test('MultiQuote', async ({ page }, testInfo) => {
+      steps.needs('Issue Quote');
+      test.setTimeout(5 * 60_000);
+      test.skip(!chain.quoteIssued && !ppp.env('QUOTE_URL'), 'The quote is not issued (Issue Quote did not complete)');
+      await ensureReference(page);
+      const multi = await new QuotePage(page).convertToMultiQuote(chain.quoteUrl);
+      expect(multi.reference, 'a new quote of the same risk').toMatch(/^RSK\d+Q\d+$/);
+      expect(multi.reference).not.toBe(chain.quoteReference);
+      expect(multi.reference.slice(0, 13), 'same risk as the source quote').toBe(chain.quoteReference.slice(0, 13));
+      testInfo.annotations.push({ type: 'multi quote', description: multi.reference });
+      await recordContract('PPP Multi Quote', multi.reference, multi.url);
+    });
+
+    // ⋮ → Taken Up opens the unsaved Policy Conversion (a Provisional policy, "To Take Up the quote the risk will be saved"): this checks
+    // the action gets there (open tasks, warnings, a re-price when asked). Nothing is saved yet: the quote stays Quoted and ⋮ still
+    // offers Taken Up, so "Policy Conversion" runs it again on its own page.
+    test('Quote Taken up', async ({ page }) => {
+      steps.needs('Issue Quote');
+      test.setTimeout(10 * 60_000);
+      test.skip(!chain.quoteIssued && !ppp.env('QUOTE_URL'), 'The quote is not issued (Issue Quote did not complete)');
+      const quote = new QuotePage(page);
+      await quote.open(chain.quoteUrl);
+      await quote.takeUp([pppSections.riskSection]);
+      await expect(page, 'Taken Up opens the Policy Conversion').toHaveURL(/\/ui\/Policy\/Conversion/);
+    });
+
+    // ⋮ → Taken Up → Policy Conversion → Save: the policy is created (Provisional) and the quote becomes Taken Up
+    test('Policy Conversion', async ({ page }, testInfo) => {
+      steps.needs('Quote Taken up');
+      test.setTimeout(10 * 60_000);
+      const quote = new QuotePage(page);
+      await quote.open(chain.quoteUrl);
+      await quote.takeUp([pppSections.riskSection]);
+      const policy = await new PolicyPage(page).saveConversion();
+      chain.convertedPolicyUrl = policy.url;
+      testInfo.annotations.push({ type: 'policy', description: policy.reference });
+      await recordContract('PPP Policy', policy.reference, policy.url);
+    });
+
+    // ⋮ → Requote is enabled once the quote is Taken Up → Ok → Save creates the new version
+    test('Requote', async ({ page }, testInfo) => {
+      steps.needs('Policy Conversion'); // ⋮ → Requote is offered once the quote is Taken Up
+      test.setTimeout(5 * 60_000);
+      test.skip(!chain.convertedPolicyUrl && !chain.policyUrl, 'The quote was not taken up (no policy conversion)');
+      await ensureReference(page);
+      const requote = await new QuotePage(page).requote(chain.quoteUrl);
+      expect(requote.reference, 'a new quote version').toMatch(/^RSK\d+Q\d+$/);
+      expect(requote.reference).not.toBe(chain.quoteReference);
+      testInfo.annotations.push({ type: 'requote', description: requote.reference });
+      await recordContract('PPP Requote', requote.reference, requote.url);
+    });
+
+    test.fixme('Data Lake - Quote/Pricing/MTA/Schedule/ALS', async () => {});
   });
 
-  // Licence Referral raised for another underwriter is forwarded to the signed-in user and approved, then the quote is issued
-  test('Issue Quote', async ({ page }) => {
-    steps.needs('Get Pricing');
-    test.setTimeout(12 * 60_000);
-    await issueWithSelfApproval(page, chain.quoteUrl, pppSections.riskSection, pppAssignee);
-    chain.quoteIssued = true;
-  });
+  // In order: the reversal undoes the endorsement made by "MTA - GE Pricing".
+  test.describe('PPP - Policy', { tag: ['@flow', '@ppp-flow'] }, () => {
+    test.describe.configure({ mode: 'default' });
 
-  // ⋮ → Convert to Multi Quote (offered on the issued quote) → Save creates the next quote of the same risk (…Q002)
-  test('MultiQuote', async ({ page }, testInfo) => {
-    steps.needs('Issue Quote');
-    test.setTimeout(5 * 60_000);
-    test.skip(!chain.quoteIssued && !ppp.env('QUOTE_URL'), 'The quote is not issued (Issue Quote did not complete)');
-    await ensureReference(page);
-    const multi = await new QuotePage(page).convertToMultiQuote(chain.quoteUrl);
-    expect(multi.reference, 'a new quote of the same risk').toMatch(/^RSK\d+Q\d+$/);
-    expect(multi.reference).not.toBe(chain.quoteReference);
-    expect(multi.reference.slice(0, 13), 'same risk as the source quote').toBe(chain.quoteReference.slice(0, 13));
-    testInfo.annotations.push({ type: 'multi quote', description: multi.reference });
-    await recordContract('PPP Multi Quote', multi.reference, multi.url);
-  });
+    // ⋮ → Confirm Cover on the converted policy: Review → On Cover, Bound / Booked. The Bound policy is what the policy tests work on.
+    test('Confirm Cover', async ({ page }) => {
+      steps.needs('Policy Conversion');
+      test.setTimeout(5 * 60_000);
+      const policyPage = new PolicyPage(page);
+      await policyPage.open(chain.convertedPolicyUrl);
+      await policyPage.confirmCover();
+      chain.policyUrl = chain.convertedPolicyUrl;
+    });
 
-  // ⋮ → Taken Up opens the unsaved Policy Conversion (a Provisional policy, "To Take Up the quote the risk will be saved"): this checks
-  // the action gets there (open tasks, warnings, a re-price when asked). Nothing is saved yet: the quote stays Quoted and ⋮ still
-  // offers Taken Up, so "Policy Conversion" runs it again on its own page.
-  test('Quote Taken up', async ({ page }) => {
-    steps.needs('Issue Quote');
-    test.setTimeout(10 * 60_000);
-    test.skip(!chain.quoteIssued && !ppp.env('QUOTE_URL'), 'The quote is not issued (Issue Quote did not complete)');
-    const quote = new QuotePage(page);
-    await quote.open(chain.quoteUrl);
-    await quote.takeUp([pppSections.riskSection]);
-    await expect(page, 'Taken Up opens the Policy Conversion').toHaveURL(/\/ui\/Policy\/Conversion/);
-  });
+    // The policy documents (schedule, covering letter, drafts) are generated in the background after Confirm Cover: all must end
+    // Completed. A document the service could not generate ("In Error") fails this test alone; the policy tests carry on.
+    test('Policy Documents - Generation', async ({ page }, testInfo) => {
+      steps.needs('Confirm Cover');
+      test.setTimeout(10 * 60_000);
+      const docs = new QuoteDocumentsPage(page, 'Policy');
+      await docs.open(chain.policyUrl);
+      const statuses = await docs.expectAllDocumentsCompleted(pppDocumentWait);
+      testInfo.annotations.push({ type: 'documents', description: `${statuses.length} completed` });
+    });
 
-  // ⋮ → Taken Up → Policy Conversion → Save: the policy is created (Provisional) and the quote becomes Taken Up
-  test('Policy Conversion', async ({ page }, testInfo) => {
-    steps.needs('Quote Taken up');
-    test.setTimeout(10 * 60_000);
-    const quote = new QuotePage(page);
-    await quote.open(chain.quoteUrl);
-    await quote.takeUp([pppSections.riskSection]);
-    const policy = await new PolicyPage(page).saveConversion();
-    chain.convertedPolicyUrl = policy.url;
-    testInfo.annotations.push({ type: 'policy', description: policy.reference });
-    await recordContract('PPP Policy', policy.reference, policy.url);
-  });
+    // General Endorsement, one test per step: endorsement quote → Get Price → Issue → Take Up Endorsement (Policy
+    // Conversion) → Confirm Endorsement. PPP_ENDORSEMENT_URL carries on from an endorsement quote already started (one endorsement per
+    // policy at a time), PPP_ENDORSED_POLICY_URL from an endorsed policy.
+    test('MTA - GE - Endorsement Quote', async ({ page }, testInfo) => {
+      if (!chain.policyUrl) steps.needs('Confirm Cover'); // a Bound policy is all it needs (its documents may still have failed)
+      test.setTimeout(10 * 60_000);
+      test.skip(!!ppp.env('ENDORSEMENT_URL') || !!ppp.env('ENDORSED_POLICY_URL'), 'An existing endorsement is used (PPP_ENDORSEMENT_URL / _ENDORSED_POLICY_URL)');
+      test.skip(!chain.policyUrl, 'No Bound policy');
+      const endorsement = await startEndorsement(page, chain.policyUrl, pppEndorsement);
+      chain.endorsementUrl = endorsement.url;
+      testInfo.annotations.push({ type: 'quote', description: endorsement.reference });
+    });
 
-  // ⋮ → Requote is enabled once the quote is Taken Up → Ok → Save creates the new version
-  test('Requote', async ({ page }, testInfo) => {
-    steps.needs('Policy Conversion'); // ⋮ → Requote is offered once the quote is Taken Up
-    test.setTimeout(5 * 60_000);
-    test.skip(!chain.convertedPolicyUrl && !chain.policyUrl, 'The quote was not taken up (no policy conversion)');
-    await ensureReference(page);
-    const requote = await new QuotePage(page).requote(chain.quoteUrl);
-    expect(requote.reference, 'a new quote version').toMatch(/^RSK\d+Q\d+$/);
-    expect(requote.reference).not.toBe(chain.quoteReference);
-    testInfo.annotations.push({ type: 'requote', description: requote.reference });
-    await recordContract('PPP Requote', requote.reference, requote.url);
-  });
+    test('MTA - GE - Get Pricing', async ({ page }) => {
+      steps.needs('MTA - GE - Endorsement Quote');
+      test.setTimeout(10 * 60_000);
+      test.skip(!!ppp.env('ENDORSED_POLICY_URL'), 'PPP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
+      test.skip(!chain.endorsementUrl, 'No endorsement quote');
+      await priceEndorsement(page, chain.endorsementUrl, pppSections.riskSection);
+    });
 
-  test.fixme('Data Lake - Quote/Pricing/MTA/Schedule/ALS', async () => {});
+    test('MTA - GE - Issue Quote', async ({ page }) => {
+      steps.needs('MTA - GE - Get Pricing');
+      test.setTimeout(12 * 60_000);
+      test.skip(!!ppp.env('ENDORSED_POLICY_URL'), 'PPP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
+      test.skip(!chain.endorsementUrl, 'No endorsement quote');
+      await issueEndorsement(page, chain.endorsementUrl, pppSections.riskSection);
+    });
+
+    test('MTA - GE - Take Up Endorsement', async ({ page }, testInfo) => {
+      steps.needs('MTA - GE - Issue Quote');
+      test.setTimeout(10 * 60_000);
+      test.skip(!!ppp.env('ENDORSED_POLICY_URL'), 'PPP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
+      test.skip(!chain.endorsementUrl, 'No endorsement quote');
+      const endorsed = await takeUpEndorsement(page, chain.endorsementUrl, pppSections.riskSection);
+      chain.endorsementConvertedUrl = endorsed.url;
+      testInfo.annotations.push({ type: 'policy', description: endorsed.reference });
+    });
+
+    test('MTA - GE - Confirm Endorsement', async ({ page }) => {
+      steps.needs('MTA - GE - Take Up Endorsement');
+      test.setTimeout(5 * 60_000);
+      const endorsedUrl = chain.endorsementConvertedUrl || ppp.env('ENDORSED_POLICY_URL');
+      test.skip(!endorsedUrl, 'No endorsed policy (Take Up Endorsement did not complete)');
+      await confirmEndorsement(page, endorsedUrl);
+      chain.endorsedPolicyUrl = endorsedUrl;
+    });
+
+    // The endorsement documents: generated in the background after the confirmation, all must end Completed.
+    // A document the service could not generate ("In Error") fails this test alone; nothing else depends on it.
+    test('MTA - GE Documents - Generation', async ({ page }) => {
+      if (!chain.endorsedPolicyUrl) steps.needs('MTA - GE - Confirm Endorsement');
+      test.setTimeout(10 * 60_000);
+      test.skip(!chain.endorsedPolicyUrl, 'No endorsed policy (the general endorsement did not complete)');
+      const docs = new QuoteDocumentsPage(page, 'Policy');
+      await docs.open(chain.endorsedPolicyUrl);
+      await docs.expectAllDocumentsCompleted(pppDocumentWait);
+    });
+
+    // Endorsement grid → ⋮ → Reverse on the Bound endorsement made above
+    test('MTA - Reversal', async ({ page }) => {
+      if (!chain.endorsedPolicyUrl) steps.needs('MTA - GE - Confirm Endorsement');
+      test.setTimeout(5 * 60_000);
+      test.skip(!chain.endorsedPolicyUrl, 'No endorsed policy (the general endorsement did not complete)');
+      await reverseEndorsement(page, chain.endorsedPolicyUrl, pppEndorsement.reasonDescription);
+    });
+  });
 });
 
 // Own quote, so a decline can't take the chain's quote away from later steps
 test.describe('PPP - Quote lifecycle', { tag: ['@flow', '@ppp-flow'] }, () => {
+  test.describe.configure({ mode: 'default' });
   // Declined, Not Taken Up and Lost are each an end state of a quote (the other two are no longer offered after one of them), so
   // each test closes a Model copy of its own: the quote made from the submission is never touched.
 
@@ -300,7 +398,7 @@ test.describe('PPP - Quote lifecycle', { tag: ['@flow', '@ppp-flow'] }, () => {
     steps.needs('Not Taken Up - Get Pricing');
     test.setTimeout(12 * 60_000);
     test.skip(!chain.ntuQuoteUrl, 'No Model copy');
-    await issueWithSelfApproval(page, chain.ntuQuoteUrl, pppSections.riskSection, pppAssignee);
+    await issueWithSelfApproval(page, chain.ntuQuoteUrl, pppSections.riskSection);
   });
 
   // The quote then shows the status "Not Taken Up" and "This risk was marked as … The reason recorded was '…'" (the ⋮ menu keeps
@@ -336,7 +434,7 @@ test.describe('PPP - Quote lifecycle', { tag: ['@flow', '@ppp-flow'] }, () => {
     steps.needs('Mark as Lost - Get Pricing');
     test.setTimeout(12 * 60_000);
     test.skip(!chain.lostQuoteUrl, 'No Model copy');
-    await issueWithSelfApproval(page, chain.lostQuoteUrl, pppSections.riskSection, pppAssignee);
+    await issueWithSelfApproval(page, chain.lostQuoteUrl, pppSections.riskSection);
   });
 
   // The quote then shows the status "Lost" and "This risk was marked as … The reason recorded was '…'" (the ⋮ menu keeps
@@ -353,105 +451,12 @@ test.describe('PPP - Quote lifecycle', { tag: ['@flow', '@ppp-flow'] }, () => {
   });
 });
 
-// In order: the reversal undoes the endorsement made by "MTA - GE Pricing".
-test.describe('PPP - Policy', { tag: ['@flow', '@ppp-flow'] }, () => {
-  test.describe.configure({ mode: 'default' });
-
-  // ⋮ → Confirm Cover on the converted policy: Review → On Cover, Bound / Booked. The Bound policy is what the policy tests work on.
-  test('Confirm Cover', async ({ page }) => {
-    steps.needs('Policy Conversion');
-    test.setTimeout(5 * 60_000);
-    const policyPage = new PolicyPage(page);
-    await policyPage.open(chain.convertedPolicyUrl);
-    await policyPage.confirmCover();
-    chain.policyUrl = chain.convertedPolicyUrl;
-  });
-
-  // The policy documents (schedule, covering letter, drafts) are generated in the background after Confirm Cover: all must end
-  // Completed. A document the service could not generate ("In Error") fails this test alone; the policy tests carry on.
-  test('Policy Documents - Generation', async ({ page }, testInfo) => {
-    steps.needs('Confirm Cover');
-    test.setTimeout(10 * 60_000);
-    const docs = new QuoteDocumentsPage(page, 'Policy');
-    await docs.open(chain.policyUrl);
-    const statuses = await docs.expectAllDocumentsCompleted(pppDocumentWait);
-    testInfo.annotations.push({ type: 'documents', description: `${statuses.length} completed` });
-  });
-
-  // General Endorsement, one test per step: endorsement quote → Get Price → Issue → Take Up Endorsement (Policy
-  // Conversion) → Confirm Endorsement. PPP_ENDORSEMENT_URL carries on from an endorsement quote already started (one endorsement per
-  // policy at a time), PPP_ENDORSED_POLICY_URL from an endorsed policy.
-  test('MTA - GE - Endorsement Quote', async ({ page }, testInfo) => {
-    if (!chain.policyUrl) steps.needs('Confirm Cover'); // a Bound policy is all it needs (its documents may still have failed)
-    test.setTimeout(10 * 60_000);
-    test.skip(!!ppp.env('ENDORSEMENT_URL') || !!ppp.env('ENDORSED_POLICY_URL'), 'An existing endorsement is used (PPP_ENDORSEMENT_URL / _ENDORSED_POLICY_URL)');
-    test.skip(!chain.policyUrl, 'No Bound policy');
-    const endorsement = await startEndorsement(page, chain.policyUrl, pppEndorsement);
-    chain.endorsementUrl = endorsement.url;
-    testInfo.annotations.push({ type: 'quote', description: endorsement.reference });
-  });
-
-  test('MTA - GE - Get Pricing', async ({ page }) => {
-    steps.needs('MTA - GE - Endorsement Quote');
-    test.setTimeout(10 * 60_000);
-    test.skip(!!ppp.env('ENDORSED_POLICY_URL'), 'PPP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
-    test.skip(!chain.endorsementUrl, 'No endorsement quote');
-    await priceEndorsement(page, chain.endorsementUrl, pppSections.riskSection);
-  });
-
-  test('MTA - GE - Issue Quote', async ({ page }) => {
-    steps.needs('MTA - GE - Get Pricing');
-    test.setTimeout(12 * 60_000);
-    test.skip(!!ppp.env('ENDORSED_POLICY_URL'), 'PPP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
-    test.skip(!chain.endorsementUrl, 'No endorsement quote');
-    await issueEndorsement(page, chain.endorsementUrl, pppSections.riskSection);
-  });
-
-  test('MTA - GE - Take Up Endorsement', async ({ page }, testInfo) => {
-    steps.needs('MTA - GE - Issue Quote');
-    test.setTimeout(10 * 60_000);
-    test.skip(!!ppp.env('ENDORSED_POLICY_URL'), 'PPP_ENDORSED_POLICY_URL is set (an endorsed policy is used)');
-    test.skip(!chain.endorsementUrl, 'No endorsement quote');
-    const endorsed = await takeUpEndorsement(page, chain.endorsementUrl, pppSections.riskSection);
-    chain.endorsementConvertedUrl = endorsed.url;
-    testInfo.annotations.push({ type: 'policy', description: endorsed.reference });
-  });
-
-  test('MTA - GE - Confirm Endorsement', async ({ page }) => {
-    steps.needs('MTA - GE - Take Up Endorsement');
-    test.setTimeout(5 * 60_000);
-    const endorsedUrl = chain.endorsementConvertedUrl || ppp.env('ENDORSED_POLICY_URL');
-    test.skip(!endorsedUrl, 'No endorsed policy (Take Up Endorsement did not complete)');
-    await confirmEndorsement(page, endorsedUrl);
-    chain.endorsedPolicyUrl = endorsedUrl;
-  });
-
-  // The endorsement documents: generated in the background after the confirmation, all must end Completed.
-  // A document the service could not generate ("In Error") fails this test alone; nothing else depends on it.
-  test('MTA - GE Documents - Generation', async ({ page }) => {
-    if (!chain.endorsedPolicyUrl) steps.needs('MTA - GE - Confirm Endorsement');
-    test.setTimeout(10 * 60_000);
-    test.skip(!chain.endorsedPolicyUrl, 'No endorsed policy (the general endorsement did not complete)');
-    const docs = new QuoteDocumentsPage(page, 'Policy');
-    await docs.open(chain.endorsedPolicyUrl);
-    await docs.expectAllDocumentsCompleted(pppDocumentWait);
-  });
-
-  // Endorsement grid → ⋮ → Reverse on the Bound endorsement made above
-  test('MTA - Reversal', async ({ page }) => {
-    if (!chain.endorsedPolicyUrl) steps.needs('MTA - GE - Confirm Endorsement');
-    test.setTimeout(5 * 60_000);
-    test.skip(!chain.endorsedPolicyUrl, 'No endorsed policy (the general endorsement did not complete)');
-    await reverseEndorsement(page, chain.endorsedPolicyUrl, pppEndorsement.reasonDescription);
-  });
-});
-
 test.describe('PPP - Cancellation', { tag: ['@flow', '@ppp-flow'] }, () => {
+  test.describe.configure({ mode: 'default' });
   // Mid Term Cancellation on a Bound policy of its own (a Model copy of the quote made from the submission, taken through the same
   // operations, one test each), then the cancellation MTA one step at a time, its documents, and Reinstate Policy on it.
   // PPP_CANCEL_POLICY_URL cancels an existing Bound policy instead, PPP_CANCEL_MTA_URL / _REINSTATE_MTA_URL carry on from existing MTAs.
   test('MTC - Model Quote', async ({ page }, testInfo) => {
-    if (!chain.policyUrl) steps.needs('Confirm Cover'); // no policy from the main chain: no cancellation either
     test.setTimeout(10 * 60_000);
     test.skip(!!ppp.env('CANCEL_POLICY_URL') || !!ppp.env('CANCEL_MTA_URL'), 'An existing policy or cancellation MTA is used (PPP_CANCEL_POLICY_URL / _CANCEL_MTA_URL)');
     const copy = await createPppModelCopy(page);
@@ -472,7 +477,7 @@ test.describe('PPP - Cancellation', { tag: ['@flow', '@ppp-flow'] }, () => {
     test.setTimeout(12 * 60_000);
     test.skip(!!ppp.env('CANCEL_POLICY_URL') || !!ppp.env('CANCEL_MTA_URL'), 'An existing policy or cancellation MTA is used (PPP_CANCEL_POLICY_URL / _CANCEL_MTA_URL)');
     test.skip(!chain.mtcBaseQuoteUrl, 'No Model copy');
-    await issueWithSelfApproval(page, chain.mtcBaseQuoteUrl, pppSections.riskSection, pppAssignee);
+    await issueWithSelfApproval(page, chain.mtcBaseQuoteUrl, pppSections.riskSection);
   });
 
   test('MTC - Policy Conversion', async ({ page }, testInfo) => {
@@ -568,7 +573,6 @@ test.describe('PPP - Renewal', { tag: ['@flow', '@ppp-flow'] }, () => {
   // The renewal's own Bound New Business policy, made the way the main one is: ⋮ → Model copy of the quote made from the submission →
   // Get Price → Issue Quote → Taken Up + Policy Conversion → Confirm Cover, one test each
   test('Renewal - Base - Model Quote', async ({ page }, testInfo) => {
-    if (!chain.policyUrl) steps.needs('Confirm Cover'); // no policy from the main chain: no renewal either
     test.setTimeout(10 * 60_000);
     test.skip(renewalPolicyGiven, 'PPP_RENEWAL_POLICY_URL is set');
     test.skip(!!ppp.env('RENEWAL_BASE_POLICY_URL') || !!ppp.env('RENEWAL_QUOTE_URL'), 'An existing base policy or renewal quote is used');
@@ -592,7 +596,7 @@ test.describe('PPP - Renewal', { tag: ['@flow', '@ppp-flow'] }, () => {
     test.skip(renewalPolicyGiven, 'PPP_RENEWAL_POLICY_URL is set');
     test.skip(!!ppp.env('RENEWAL_BASE_POLICY_URL') || !!ppp.env('RENEWAL_QUOTE_URL'), 'An existing base policy or renewal quote is used');
     test.skip(!chain.renewalBaseQuoteUrl, 'No Model copy');
-    await issueWithSelfApproval(page, chain.renewalBaseQuoteUrl, pppSections.riskSection, pppAssignee);
+    await issueWithSelfApproval(page, chain.renewalBaseQuoteUrl, pppSections.riskSection);
   });
 
   test('Renewal - Base - Policy Conversion', async ({ page }, testInfo) => {
@@ -653,7 +657,7 @@ test.describe('PPP - Renewal', { tag: ['@flow', '@ppp-flow'] }, () => {
     test.setTimeout(12 * 60_000);
     test.skip(renewalPolicyGiven, 'PPP_RENEWAL_POLICY_URL is set');
     test.skip(!chain.renewalQuoteUrl, 'No renewal quote');
-    await issueWithSelfApproval(page, chain.renewalQuoteUrl, pppSections.riskSection, pppAssignee);
+    await issueWithSelfApproval(page, chain.renewalQuoteUrl, pppSections.riskSection);
   });
 
   // ⋮ → Taken Up (on a renewal: "Quote Taken Up") reaches the unsaved Policy Conversion; nothing is saved yet (see "Quote Taken up")

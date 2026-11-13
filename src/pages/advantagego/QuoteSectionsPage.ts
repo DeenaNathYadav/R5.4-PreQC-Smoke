@@ -1,5 +1,5 @@
 import { Page, expect } from '@playwright/test';
-import { businessAction, clickSave, expectToast, waitForIdle } from './entity';
+import { businessAction, clickSave, expectToast, reloadWithMenu, waitForIdle } from './entity';
 import { expandSectionFor, field } from './kendo';
 
 export const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -124,7 +124,21 @@ export class QuoteSectionsPage {
    * Passes when the success toast "Price is returned back from the rating engine" appears.
    * Returns false (only with `dialogOptional`) when the app priced without showing the section dialog.
    */
-  async getPrice(riskSections: string[], { dialogOptional = false } = {}): Promise<boolean> {
+  async getPrice(riskSections: string[], { dialogOptional = false, retry = true } = {}): Promise<boolean> {
+    try {
+      return await this.getPriceOnce(riskSections, { dialogOptional });
+    } catch (e) {
+      // The rating engine now and then answers "Pricing in progress" and never returns the price in time, or an error with no price:
+      // try once more from a fresh page (as the PPP endorsement pricing does). A business refusal (the schedule is not geocoded) is
+      // not retried: the caller acts on it.
+      if (!retry || /Geocoding for all schedule items/i.test(String((e as Error)?.message))) throw e;
+      console.log(`Get Price failed, retrying once: ${String((e as Error).message).split('\n')[0]}`);
+      await reloadWithMenu(this.page);
+      return await this.getPriceOnce(riskSections, { dialogOptional });
+    }
+  }
+
+  private async getPriceOnce(riskSections: string[], { dialogOptional = false } = {}): Promise<boolean> {
     const { page } = this;
     await businessAction(page, 'Get Price');
     const acknowledge = page.getByText('ACKNOWLEDGE', { exact: true }).first();

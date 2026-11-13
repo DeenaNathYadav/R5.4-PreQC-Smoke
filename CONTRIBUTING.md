@@ -86,12 +86,13 @@ scripts/* · reporters/* · playwright.config.ts   ⚠️ SHARED: runner, report
 1. Add the checklist row's data to `src/products/<key>/data.ts`.
 2. Add the step to `src/products/<key>/flows/quote.ts` or `policy.ts`, reusing the shared page objects.
 3. Add the test to `tests/<key>/flows.spec.ts` **in chain order**, in the right group (`<Product> - Quote`, `- Policy`,
-   `- Cancellation`, `- Renewal`…):
+   `- Cancellation`, `- Renewal`…). The whole file runs in order (and, with `SHARED_PAGE=1`, in one browser page that stays open
+   between tests), so a test must not rely on starting from a blank page: open the record it works on first (`QuotePage.open`, `gotoWithMenu`, …):
 
    ```ts
    test('Issue Quote', async ({ page }) => {
      steps.needs('Get Pricing');                 // skipped as Blocked if pricing failed
-     await issueWithSelfApproval(page, chain.quoteUrl, pppSections.riskSection, pppAssignee); // data from data.ts
+     await issueWithSelfApproval(page, chain.quoteUrl, pppSections.riskSection); // referral forwarded to the signed-in user
      chain.quoteIssued = true;                   // later tests read it back, even in a new worker
    });
    ```

@@ -104,4 +104,4 @@ export const cmbcInceptionCancellation = {
 
 export const cmbcReinstatement = { reasonDescription: 'CMBC SmokeAgent' };
 
-export const cmbcAssignee = cmbc.env('TASK_ASSIGNEE') || 'Deena Yadav';
+export const cmbcAssignee = cmbc.env('TASK_ASSIGNEE') || ''; // empty = the signed-in user

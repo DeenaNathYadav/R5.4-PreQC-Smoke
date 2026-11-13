@@ -10,7 +10,7 @@ import { recordContract } from '../../../support/contracts';
 import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { CmbcSectionsPage } from '../CmbcSectionsPage';
-import { cmbcAssignee, cmbcCommission, cmbcQuote, cmbcScheduleFile, cmbcSections, cmbcSubmission, cmbcSubmissionDetails } from '../data';
+import { cmbcCommission, cmbcQuote, cmbcScheduleFile, cmbcSections, cmbcSubmission, cmbcSubmissionDetails } from '../data';
 
 // How long CMBC waits for generated documents to reach Completed: its documents take several minutes on this host.
 export const cmbcDocumentWait = { retries: 6, delayMs: 20_000 };
@@ -143,7 +143,7 @@ export async function fillCtaRationale(page: Page, quoteUrl: string): Promise<vo
  * forwarded to the signed-in user and approved from the quote's History → Tasks, then the quote is issued and its
  * documents generated. CMBC prices at UW Review & Process, so the quote may already be past Risk Details.
  */
-export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSection: string, assignee: string): Promise<void> {
+export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSection: string): Promise<void> {
   const quote = new QuotePage(page);
   await quote.open(quoteUrl);
   const actions = await listActions(page);
@@ -157,7 +157,7 @@ export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSe
   // Each "referred" raises a Licence Referral for another underwriter: forward it to us, approve it, then issue again.
   // The status flips to Approved a moment before the approval counts, so give it a few seconds and allow a couple of rounds.
   for (let round = 0; round < 3 && outcome === 'referred'; round++) {
-    await quote.forwardTask(quoteUrl, 'Licence Referral', assignee);
+    await quote.forwardTask(quoteUrl, 'Licence Referral');
     await quote.approveLicenceReferral(quoteUrl);
     await page.waitForTimeout(15_000);
     await quote.open(quoteUrl);
@@ -220,7 +220,7 @@ export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
   const copy = await createCmbcModelCopy(page);
   // The copy goes through the same operations as the quote it was copied from, geocoding + peril score of its schedule included
   await priceQuote(page, copy.url, { geocodeFirst: true });
-  await issueWithSelfApproval(page, copy.url, cmbcSections.riskSections[0], cmbcAssignee);
+  await issueWithSelfApproval(page, copy.url, cmbcSections.riskSections[0]);
   // Set-up policy for the cancellation / renewal tests: its documents are asserted by the Taken up quote test, not here
   return takeUpAndBind(page, copy.url, cmbcSections.riskSections[0], 'CMBC Policy', () => {}, false);
 }

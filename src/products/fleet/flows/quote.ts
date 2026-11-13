@@ -20,7 +20,6 @@ import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { FleetSectionsPage, setGridCell } from '../FleetSectionsPage';
 import {
-  fleetAssignee,
   fleetClaims,
   fleetCommission,
   fleetQuote,
@@ -92,7 +91,7 @@ export async function createFleetModelCopy(page: Page): Promise<{ reference: str
  * forwarded to the signed-in user and approved from the quote's History → Tasks, then the quote is issued and its
  * documents generated. Fleet prices at UW Review & Process, so the quote may already be past Risk Details.
  */
-export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSection: string, assignee: string): Promise<void> {
+export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSection: string): Promise<void> {
   const quote = new QuotePage(page);
   await quote.open(quoteUrl);
   const actions = await listActions(page);
@@ -106,7 +105,7 @@ export async function issueWithSelfApproval(page: Page, quoteUrl: string, riskSe
   // Each "referred" raises a Licence Referral for another underwriter: forward it to us, approve it, then issue again.
   // The status flips to Approved a moment before the approval counts, so give it a few seconds and allow a couple of rounds.
   for (let round = 0; round < 3 && outcome === 'referred'; round++) {
-    await quote.forwardTask(quoteUrl, 'Licence Referral', assignee);
+    await quote.forwardTask(quoteUrl, 'Licence Referral');
     await quote.approveLicenceReferral(quoteUrl);
     await page.waitForTimeout(15_000);
     await quote.open(quoteUrl);
@@ -366,7 +365,7 @@ export async function fillCtaRationale(page: Page, quoteUrl: string): Promise<vo
 export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
   const copy = await createFleetModelCopy(page);
   await priceQuote(page, copy.url);
-  await issueWithSelfApproval(page, copy.url, fleetSections.riskSection, fleetAssignee);
+  await issueWithSelfApproval(page, copy.url, fleetSections.riskSection);
   // Set-up policy for the cancellation / renewal tests: its documents are asserted by the Taken up quote test, not here
   return takeUpAndBind(page, copy.url, fleetSections.riskSection, 'Fleet Policy', () => {}, false);
 }

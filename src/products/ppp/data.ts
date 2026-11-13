@@ -53,7 +53,7 @@ export const pppScheduleFile = path.resolve(
   ppp.env('SCHEDULE_IMPORT') || path.join(__dirname, '../../../PPP/PPP_Schedule_Import.xlsx'),
 );
 
-export const pppAssignee = ppp.env('TASK_ASSIGNEE') || 'Deena Yadav';
+export const pppAssignee = ppp.env('TASK_ASSIGNEE') || ''; // empty = the signed-in user
 
 // Quote → ⋮ → Create Task. PPP has its own referral type (PPP_TASK_TYPE overrides).
 export const pppTask: TaskData = {

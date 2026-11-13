@@ -19,7 +19,8 @@ export default defineConfig({
   expect: { timeout: 30_000 },
   fullyParallel: true,
   retries: isCI ? 1 : 0,
-  workers: isCI ? 4 : undefined,
+  // A product's flows are one ordered sequence (one worker); the second runs the smoke checks alongside. The runner sets the same.
+  workers: Number(process.env.SMOKE_WORKERS) || 2,
   reporter: [
     process.env.SMOKE_REPORTER === 'list' ? ['list'] : ['./reporters/console-reporter.ts', { outputDir: resultsDir }],
     ['./reporters/contracts-reporter.ts', { outputDir: resultsDir }],

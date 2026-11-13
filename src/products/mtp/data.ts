@@ -91,4 +91,4 @@ export const mtpInceptionCancellation = {
 
 export const mtpReinstatement = { reasonDescription: 'MTP SmokeAgent' };
 
-export const mtpAssignee = mtp.env('TASK_ASSIGNEE') || 'Deena Yadav';
+export const mtpAssignee = mtp.env('TASK_ASSIGNEE') || ''; // empty = the signed-in user
