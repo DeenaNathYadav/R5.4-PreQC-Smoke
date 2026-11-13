@@ -1,6 +1,6 @@
-import { chromium, test as base, expect, type BrowserContext, type Page } from '@playwright/test';
+import { test as base, expect, type BrowserContext, type Page } from '@playwright/test';
 import { ProductConfig, getProduct } from '../products';
-import { authProfileDir, refreshSavedSession, restoreSessionStorage } from '../config/auth';
+import { refreshSavedSession, restoreSessionStorage } from '../config/auth';
 
 export interface Diagnostics {
   consoleErrors: string[];
@@ -39,26 +39,16 @@ export const test = base.extend<{ product: ProductConfig; diagnostics: Diagnosti
       // ("Refreshing Token") once the app had to renew its sign-in, which a new window per test does not run into.
       if (metadata.role !== 'product' || process.env.SHARED_PAGE !== '1') return use(null);
       const product = getProduct(metadata.product);
-      let context: BrowserContext;
-      if (product.useEdgeProfile) {
-        context = await chromium.launchPersistentContext(authProfileDir(), {
-          channel: process.env.BROWSER_CHANNEL || 'msedge',
-          headless: false,
-          baseURL: product.baseUrl,
-          ignoreHTTPSErrors: true,
-          viewport: { width: 1600, height: 900 },
-        });
-      } else {
-        context = await browser.newContext({
-          baseURL: options.baseURL,
-          storageState: options.storageState,
-          viewport: options.viewport,
-          userAgent: options.userAgent,
-          deviceScaleFactor: options.deviceScaleFactor,
-          ignoreHTTPSErrors: options.ignoreHTTPSErrors,
-        });
-        await restoreSessionStorage(context, product);
-      }
+      // Every product signs in the same way: the saved session (auth.setup) in a new context, with or without SHARED_PAGE
+      const context: BrowserContext = await browser.newContext({
+        baseURL: options.baseURL,
+        storageState: options.storageState,
+        viewport: options.viewport,
+        userAgent: options.userAgent,
+        deviceScaleFactor: options.deviceScaleFactor,
+        ignoreHTTPSErrors: options.ignoreHTTPSErrors,
+      });
+      await restoreSessionStorage(context, product);
       context.setDefaultTimeout(options.actionTimeout ?? 20_000);
       context.setDefaultNavigationTimeout(options.navigationTimeout ?? 90_000);
       const page = context.pages()[0] ?? (await context.newPage());
@@ -102,11 +92,11 @@ export const test = base.extend<{ product: ProductConfig; diagnostics: Diagnosti
   },
 
   // After every product test that ends still signed in, its session is saved back over the one auth.setup saved (see
-  // refreshSavedSession): long runs outlive the app's tokens otherwise. Not with the Edge profile, which keeps its own session.
+  // refreshSavedSession): long runs outlive the app's tokens otherwise.
   sessionKeeper: [
     async ({ page, product }, use, testInfo) => {
       await use();
-      if (testInfo.project.metadata.role === 'product' && !product.useEdgeProfile) {
+      if (testInfo.project.metadata.role === 'product') {
         await refreshSavedSession(page, product).catch(() => {});
       }
     },

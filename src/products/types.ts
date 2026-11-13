@@ -46,16 +46,14 @@ export interface ProductConfig {
   /** Element showing the deployed build/version, checked against EXPECTED_BUILD. */
   buildVersion?: Selector;
   pages: SmokePage[];
-  /** Run in the signed-in Edge profile from `npm run login:cdp` (`<KEY>_USE_EDGE_PROFILE=1`) instead of the saved session. */
-  useEdgeProfile: boolean;
-  /** Most parallel workers the runner gives this product. A product that owns the Edge profile can only run one at a time. */
+  /** Most parallel workers the runner gives this product (unlimited when unset). */
   maxWorkers?: number;
   /** Product-scoped env var: `pi.env('QUOTE_URL')` reads PI_QUOTE_URL ('' when unset). */
   env(name: string): string;
 }
 
 export type ProductOverrides = Partial<
-  Omit<ProductConfig, 'key' | 'name' | 'baseUrl' | 'username' | 'password' | 'useEdgeProfile' | 'env'>
+  Omit<ProductConfig, 'key' | 'name' | 'baseUrl' | 'username' | 'password' | 'env'>
 >;
 
 const defaultFormLogin: FormLogin = {
@@ -69,7 +67,6 @@ const defaultFormLogin: FormLogin = {
 export function defineProduct(key: string, name: string, overrides: ProductOverrides = {}): ProductConfig {
   const prefix = key.toUpperCase();
   const productEnv = (suffix: string) => readEnv(`${prefix}_${suffix}`);
-  const useEdgeProfile = productEnv('USE_EDGE_PROFILE') === '1';
   return {
     key,
     name,
@@ -80,8 +77,6 @@ export function defineProduct(key: string, name: string, overrides: ProductOverr
     login: defaultFormLogin,
     loggedInIndicator: 'text=/log ?out|sign ?out/i',
     pages: [{ name: 'Home', path: '/', expect: 'body' }],
-    useEdgeProfile,
-    maxWorkers: useEdgeProfile ? 1 : undefined,
     env: productEnv,
     ...overrides,
   };

@@ -208,8 +208,7 @@ flowchart TB
 - 🔑 The sign-in is checked **once per login host** (PI and CMBC share one host → one check). A product whose sign-in fails is reported
   as *blocked* instead of failing every test.
 - 🔒 Products running side by side share two kinds of file, both written safely: the saved sign-in (`.auth/<host>.json`, refreshed after every test) is written to a temporary file and renamed into place, so a product starting a test never reads it half-written; what to re-run is kept per product (`results/last-failed/<key>.json`). A product run on its own works exactly as before.
-- 🧵 A product that needs a single browser (`<KEY>_USE_EDGE_PROFILE=1`, i.e. CMBC today) is held to **one worker**; in parallel mode the
-  other products split the remaining workers. A product gets 2 workers by default, the flows and the smoke checks
+- 🧵 In parallel mode the products split the workers. A product gets 2 workers by default, the flows and the smoke checks
   (`SMOKE_WORKERS=N` to change); an explicit `--workers=N` wins.
 
 ---
