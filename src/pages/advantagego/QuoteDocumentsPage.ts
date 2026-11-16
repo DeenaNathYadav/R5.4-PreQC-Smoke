@@ -49,7 +49,7 @@ export class QuoteDocumentsPage {
   async upload(data: UploadData): Promise<string> {
     const { page } = this;
     const title = data.filePath.split(/[\\/]/).pop()!;
-    await page.locator('[title="Attach File(s)"]').first().click();
+    await page.locator('[title="Attach File(s)"] button, button[title="Attach File(s)"]').locator('visible=true').first().click();
     const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByText('Attach File', { exact: true }).click()]);
     await chooser.setFiles(data.filePath);
 
