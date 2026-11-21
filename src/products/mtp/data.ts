@@ -1,5 +1,6 @@
 import path from 'path';
 import { SubmissionData } from '../../pages/advantagego/NewSubmissionPage';
+import { smokeSubmissionParties } from '../../parties/data';
 import { ConvertToQuoteData, SubmissionDetails } from '../../pages/advantagego/SubmissionPage';
 import { UploadData } from '../../pages/advantagego/QuoteDocumentsPage';
 import { mtp } from '.';
@@ -8,10 +9,10 @@ import { MtpSectionData } from './MtpSectionsPage';
 
 // QC test data for the MTP (Motor Trade) smoke flows.
 export const mtpSubmission = (): SubmissionData => ({
-  insured: 'Anjali Insured demo',
-  agencyName: 'Anjali,Intermediary',
-  agencySearch: 'Anjali',
-  agencyNumber: '7401474',
+  insured: smokeSubmissionParties.insured,
+  agencyName: smokeSubmissionParties.agencyName,
+  agencySearch: smokeSubmissionParties.agencySearch,
+  agencyNumber: smokeSubmissionParties.agencyNumber,
   inceptsOn: inceptionDate(),
   businessDescription: `MTP Smoke ${new Date().toISOString().slice(0, 16)}`,
 });
@@ -19,7 +20,7 @@ export const mtpSubmission = (): SubmissionData => ({
 export const mtpSubmissionDetails: SubmissionDetails = {
   transactionType: 'New Business',
   businessCategory: 'SME',
-  underwriter: 'Singhai UW,Shenki',
+  underwriter: smokeSubmissionParties.underwriter,
 };
 
 export const mtpQuote: ConvertToQuoteData = {

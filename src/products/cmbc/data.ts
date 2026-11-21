@@ -1,5 +1,6 @@
 import path from 'path';
 import { SubmissionData } from '../../pages/advantagego/NewSubmissionPage';
+import { smokeSubmissionParties } from '../../parties/data';
 import { ConvertToQuoteData, SubmissionDetails } from '../../pages/advantagego/SubmissionPage';
 import { UploadData } from '../../pages/advantagego/QuoteDocumentsPage';
 import { cmbc } from '.';
@@ -7,10 +8,10 @@ import { cancellationDate, inceptionDate } from '../../support/dates';
 import { CmbcSectionData } from './CmbcSectionsPage';
 
 export const cmbcSubmission = (): SubmissionData => ({
-  insured: 'Anjali Insured demo',
-  agencyName: 'Anjali,Intermediary',
-  agencySearch: 'Anjali',
-  agencyNumber: '7401474',
+  insured: smokeSubmissionParties.insured,
+  agencyName: smokeSubmissionParties.agencyName,
+  agencySearch: smokeSubmissionParties.agencySearch,
+  agencyNumber: smokeSubmissionParties.agencyNumber,
   inceptsOn: inceptionDate(),
   businessDescription: `CMBC Smoke ${new Date().toISOString().slice(0, 16)}`,
 });
@@ -18,7 +19,7 @@ export const cmbcSubmission = (): SubmissionData => ({
 export const cmbcSubmissionDetails: SubmissionDetails = {
   transactionType: 'New Business',
   businessCategory: 'SME',
-  underwriter: 'Singhai UW,Shenki',
+  underwriter: smokeSubmissionParties.underwriter,
 };
 
 export const cmbcQuote: ConvertToQuoteData = {

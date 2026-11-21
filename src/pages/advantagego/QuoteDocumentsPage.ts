@@ -49,6 +49,8 @@ export class QuoteDocumentsPage {
   async upload(data: UploadData): Promise<string> {
     const { page } = this;
     const title = data.filePath.split(/[\\/]/).pop()!;
+    // The "+" is a <button> inside an <app-anchor-tag title="Attach File(s)">; since R5.4 the wrapper has no size of its own, so
+    // click the button (it opens the attach menu)
     await page.locator('[title="Attach File(s)"] button, button[title="Attach File(s)"]').locator('visible=true').first().click();
     const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByText('Attach File', { exact: true }).click()]);
     await chooser.setFiles(data.filePath);

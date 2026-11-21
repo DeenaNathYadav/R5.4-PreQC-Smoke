@@ -18,12 +18,12 @@ interface Ended {
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 // Annotations worth showing next to a passed test: the contracts it made, the premium it got, a commission fallback
-const SHOWN = ['submission', 'quote', 'policy', 'documents', 'multi quote', 'requote', 'premium', 'commission added by hand', 'commission not rated'];
+const SHOWN = ['party', 'submission', 'quote', 'policy', 'documents', 'multi quote', 'requote', 'premium', 'commission added by hand', 'commission not rated'];
 
 /**
  * Console output for the smoke runs, replacing Playwright's "list" reporter:
  *  - a header (product, tests, workers, run id), then the tests grouped under their section (Quote, Policy, Cancellation …), one
- *    line each: ✔ passed · ✘ failed (reason right underneath) · ⊘ blocked by a failed blocking step · ○ skipped on purpose
+ *    line each: ✓ passed · ✘ failed (reason right underneath) · ⊘ blocked by a failed blocking step · ○ skipped on purpose
  *  - in a terminal, a live line at the bottom: progress bar, elapsed time, the tests running now and what they last printed
  *  - what the tests print with console.log goes to run.log in the report folder instead of cluttering the console
  *  - a summary: verdict, total time, counts, a table per section, the failures with their trace, the command that re-runs them
@@ -105,7 +105,7 @@ export default class ConsoleReporter implements Reporter {
             .filter(Boolean)
             .join('  ·  '),
         ),
-        color.dim(`started ${new Date().toLocaleTimeString()}  ·  ✔ passed  ✘ failed  ⊘ blocked  ○ skipped`),
+        color.dim(`started ${new Date().toLocaleTimeString()}  ·  ✓ passed  ✘ failed  ⊘ blocked  ○ skipped`),
       ]),
     );
     this.print();
@@ -183,7 +183,7 @@ export default class ConsoleReporter implements Reporter {
         .filter((a) => SHOWN.includes(a.type) && a.description)
         .map((a) => `${a.type} ${shortValue(a.type, a.description!)}`)
         .join(' · ');
-      this.print(`    ${color.green('✔')} ${n}${title}  ${time}${extra ? color.dim(`  ${truncate(extra, 90)}`) : ''}`);
+      this.print(`    ${color.green('✓')} ${n}${title}  ${time}${extra ? color.dim(`  ${truncate(extra, 90)}`) : ''}`);
     } else {
       entry.outcome = 'failed';
       const message = stripAnsi(result.error?.message ?? result.errors?.[0]?.message ?? result.status);
@@ -207,13 +207,13 @@ export default class ConsoleReporter implements Reporter {
     const ok = !failed && result.status === 'passed';
 
     // Verdict + counts
-    const verdict = ok ? color.green(color.bold(' ✔ PASSED ')) : color.red(color.bold(result.status === 'interrupted' ? ' ✘ INTERRUPTED ' : ' ✘ FAILED '));
+    const verdict = ok ? color.green(color.bold(' ✓ PASSED ')) : color.red(color.bold(result.status === 'interrupted' ? ' ✘ INTERRUPTED ' : ' ✘ FAILED '));
     const pill = (n: number, label: string, paint: (s: string) => string) => (n ? paint(color.bold(`${label} ${n}`)) : color.dim(`${label} 0`));
     console.log();
     console.log(
       box([
         `${verdict}   ${color.bold(`Total time ${seconds(elapsed)}`)}${color.dim(`   ·   ${this.ended.length} tests   ·   finished ${new Date().toLocaleTimeString()}`)}`,
-        [pill(passed, '✔ passed', color.green), pill(failed, '✘ failed', color.red), pill(blocked, '⊘ blocked', color.magenta), pill(skipped + notRun, '○ skipped', color.orange)].join('    '),
+        [pill(passed, '✓ passed', color.green), pill(failed, '✘ failed', color.red), pill(blocked, '⊘ blocked', color.magenta), pill(skipped + notRun, '○ skipped', color.orange)].join('    '),
       ]),
     );
 
@@ -221,7 +221,7 @@ export default class ConsoleReporter implements Reporter {
     const groups = [...new Set(this.ended.map((e) => e.group))];
     if (groups.length > 1) {
       const width = Math.max(...groups.map((g) => g.length), 7);
-      console.log(`\n  ${color.dim('Section'.padEnd(width))}   ${color.dim('  ✔    ✘    ⊘    ○     time')}`);
+      console.log(`\n  ${color.dim('Section'.padEnd(width))}   ${color.dim('  ✓    ✘    ⊘    ○     time')}`);
       for (const g of groups) {
         const rows = this.ended.filter((e) => e.group === g);
         const c = (o: Outcome[]) => String(rows.filter((r) => o.includes(r.outcome)).length).padStart(3);

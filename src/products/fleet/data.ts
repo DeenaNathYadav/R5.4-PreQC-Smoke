@@ -1,5 +1,6 @@
 import path from 'path';
 import { SubmissionData } from '../../pages/advantagego/NewSubmissionPage';
+import { smokeSubmissionParties } from '../../parties/data';
 import { ConvertToQuoteData, SubmissionDetails } from '../../pages/advantagego/SubmissionPage';
 import { TaskData } from '../../pages/advantagego/QuotePage';
 import { UploadData } from '../../pages/advantagego/QuoteDocumentsPage';
@@ -8,10 +9,10 @@ import { cancellationDate, inceptionDate } from '../../support/dates';
 
 // QC test data for the Fleet smoke flows.
 export const fleetSubmission = (): SubmissionData => ({
-  insured: 'Anjali Insured demo',
-  agencyName: 'Anjali,Intermediary',
-  agencySearch: 'Anjali',
-  agencyNumber: '7401474',
+  insured: smokeSubmissionParties.insured,
+  agencyName: smokeSubmissionParties.agencyName,
+  agencySearch: smokeSubmissionParties.agencySearch,
+  agencyNumber: smokeSubmissionParties.agencyNumber,
   inceptsOn: inceptionDate(),
   businessDescription: `Fleet Smoke ${new Date().toISOString().slice(0, 16)}`,
 });
@@ -19,7 +20,7 @@ export const fleetSubmission = (): SubmissionData => ({
 export const fleetSubmissionDetails: SubmissionDetails = {
   transactionType: 'New Business',
   businessCategory: 'SME',
-  underwriter: 'Agarwal,Nitin',
+  underwriter: smokeSubmissionParties.underwriter,
 };
 
 // The product defaults Insurance Type / Contract Structure. Conversion needs the three Risk Validation questions answered

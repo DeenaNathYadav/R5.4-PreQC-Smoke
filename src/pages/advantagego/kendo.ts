@@ -69,10 +69,15 @@ export async function expandSectionFor(page: Page, section: string, label: strin
  * The calendar opens on the month of the field's current value (or the current month when it is empty).
  */
 export async function selectDate(page: Page, label: string, date: Date): Promise<void> {
-  await fieldContainer(page, label).getByRole('button', { name: 'Toggle calendar' }).click();
+  await selectDateIn(page, fieldContainer(page, label), date);
+}
+
+/** selectDate for a field container found some other way (e.g. dialogField). */
+export async function selectDateIn(page: Page, container: Locator, date: Date): Promise<void> {
+  await container.getByRole('button', { name: 'Toggle calendar' }).click();
   const calendar = page.locator('.k-calendar').last();
 
-  const shown = (await field(page, label).inputValue().catch(() => '')).match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  const shown = (await container.locator('input').first().inputValue().catch(() => '')).match(/(\d{2})\/(\d{2})\/(\d{4})/);
   const today = shown ? new Date(Number(shown[3]), Number(shown[2]) - 1, Number(shown[1])) : new Date();
   const monthDiff = (date.getFullYear() - today.getFullYear()) * 12 + (date.getMonth() - today.getMonth());
   const nav = calendar.locator(monthDiff > 0 ? '.k-calendar-nav-next' : '.k-calendar-nav-prev');

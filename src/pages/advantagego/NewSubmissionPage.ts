@@ -1,5 +1,6 @@
 import { Page, expect } from '@playwright/test';
 import { field, formatDate, selectAutocomplete, selectDate } from './kendo';
+import { ensureSmokeParties } from '../../parties/ensure';
 
 export interface SubmissionData {
   insured: string;
@@ -34,6 +35,8 @@ export class NewSubmissionPage {
   constructor(private readonly page: Page) {}
 
   async open(): Promise<void> {
+    // The submission is made with the suite's own parties (src/parties): created first if this environment doesn't have them yet
+    await ensureSmokeParties(this.page);
     // The form occasionally renders blank on first load; a reload fixes it
     await expect(async () => {
       await this.page.goto('/ui/home/newSubmission');

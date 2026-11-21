@@ -337,7 +337,7 @@ if (opts.auth) {
       else console.log(`\n  Checking the saved sign-in for ${host}...`);
       const run = await playwright([`--project=${authProject}`, '--reporter=list'], { env: { SMOKE_REPORT_DIR: dir }, capture: true });
       if (process.stdout.isTTY) process.stdout.write('\r\x1b[2K');
-      if (run.code === 0) console.log(`  ${paint.green('✔')} Signed in to ${paint.bold(host)} ${paint.dim(fmt(run.ms))}`);
+      if (run.code === 0) console.log(`  ${paint.green('✓')} Signed in to ${paint.bold(host)} ${paint.dim(fmt(run.ms))}`);
       else {
         console.log(`  ${paint.red('✘')} Sign-in check failed for ${paint.bold(host)} ${paint.dim(fmt(run.ms))}`);
         const detail = run.stdout.split(/\r?\n/).filter((l) => /error|expired|session|login|Run "npm/i.test(l)).slice(0, 4);
@@ -468,11 +468,11 @@ fs.writeFileSync(
 
 if (!opts.authOnly) {
   const allOk = rows.every((r) => r.status === 'passed' || r.status === 'nothing to re-run');
-  const statusText = (s) => (s === 'passed' ? paint.green(`✔ ${s}`) : s === 'nothing to re-run' ? paint.dim(s) : s.startsWith('failed') || s.startsWith('error') ? paint.red(`✘ ${s}`) : paint.orange(`○ ${s}`));
+  const statusText = (s) => (s === 'passed' ? paint.green(`✓ ${s}`) : s === 'nothing to re-run' ? paint.dim(s) : s.startsWith('failed') || s.startsWith('error') ? paint.red(`✘ ${s}`) : paint.orange(`○ ${s}`));
   const num = (n, colour) => (n ? colour(String(n).padStart(4)) : paint.dim(String(n ?? '-').padStart(4)));
   const width = Math.max(7, ...rows.map((r) => r.product.title.length));
   console.log(`\n${paint.bold(allOk ? paint.green('━━━ Smoke summary') : paint.red('━━━ Smoke summary'))} ${paint.dim(`(${mode})  ·  run ${runId}`)}\n`);
-  console.log(`  ${paint.dim(pad('Product', width))}  ${paint.dim(pad('Result', 24))}${paint.dim('   ✔    ✘    ⊘    ○')}    ${paint.dim('time')}`);
+  console.log(`  ${paint.dim(pad('Product', width))}  ${paint.dim(pad('Result', 24))}${paint.dim('   ✓    ✘    ⊘    ○')}    ${paint.dim('time')}`);
   for (const { product, status, counts, ms } of rows) {
     const n = counts ? `${num(counts.passed, paint.green)} ${num(counts.failed, paint.red)} ${num(counts.blocked, paint.magenta)} ${num(counts.skipped, paint.orange)}` : paint.dim('   -    -    -    -');
     console.log(`  ${pad(paint.bold(product.title), width)}  ${pad(statusText(status), 24)}${n}    ${ms ? fmt(ms) : paint.dim('-')}`);

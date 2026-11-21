@@ -208,7 +208,8 @@ flowchart TB
 - 🔑 The sign-in is checked **once per login host** (PI and CMBC share one host → one check). A product whose sign-in fails is reported
   as *blocked* instead of failing every test.
 - 🔒 Products running side by side share two kinds of file, both written safely: the saved sign-in (`.auth/<host>.json`, refreshed after every test) is written to a temporary file and renamed into place, so a product starting a test never reads it half-written; what to re-run is kept per product (`results/last-failed/<key>.json`). A product run on its own works exactly as before.
-- 🧵 In parallel mode the products split the workers. A product gets 2 workers by default, the flows and the smoke checks
+- 🧵 A product that needs a single browser (`<KEY>_USE_EDGE_PROFILE=1`, i.e. CMBC today) is held to **one worker**; in parallel mode the
+  other products split the remaining workers. A product gets 2 workers by default, the flows and the smoke checks
   (`SMOKE_WORKERS=N` to change); an explicit `--workers=N` wins.
 
 ---
@@ -377,8 +378,25 @@ Own folder `src/products/fleet/` (data, `FleetSectionsPage`, `flows/quote.ts`, `
 | Add schedule by import · CDL call | ✅ | `Insert schedule by import (vehicle lookup)`: SCHEDULE → Import, *With Vehicle Lookup* (the CDL call enriches each registration) |
 | Get Claims | ✅ | `Fleet - Schedule and Claims` › `Get Claims`: ⋮ → Get AXA Claims, the claims connector must answer OK. Not yet run |
 | Add / Update / Delete Schedule manually · Export | ✅ | Same section, on a Model copy of its own: + Add New → registration → Save · the registration changed → Save · ticked → − Delete → Ok · Export → .xlsx. The grid can open with another row already ticked, so Delete unticks every other row first |
-| Create Individual Party / Organisation | – | Not part of the product smoke |
+| Create Individual Party / Organisation | ✅ | The suite's own parties, see *Smoke parties* below |
 | Data lake | 🔒 | Backend evidence |
+
+### 👥 Smoke parties — `tests/<key>/parties.spec.ts` (all five products)
+
+Three tests, **Party - Smoke Insured / Smoke Intermediary / Smoke Underwriter**, make sure the suite's own parties exist on the host
+(`src/parties/data.ts`, copied from preQC's reference parties, email `deena.yadav@sapiens.com`). Each one is looked up by its exact
+name in the header search (category Party) and **used as it is when it exists**; only a missing party is created. A party missing role
+data (e.g. after a run that stopped half-way) gets it added.
+
+| Party | Type | Copied from | Role and Additional Data |
+|---|---|---|---|
+| Smoke Insured | Organisation | Anjali Insured PTY00841599 | Insured: ERN 23232323 (exempt, below threshold), Date Established 01/04/2026, countries UNITED KINGDOM, Company House C12345 · Main Contact: Smoke,Contact |
+| Smoke,Intermediary | Individual (First *Intermediary*, Surname *Smoke*) | Anjali,Intermediary PTY00840654 | Intermediary: **Agency Number 7401474**, Branch London Commercial · Child: Smoke,Contact |
+| Smoke,Underwriter | Individual | Agarwal,Nitin PTY00840433 | Underwriter: Branch Birmingham, Business Title Underwriter |
+| Smoke,Contact | Individual | Anjali,contact PTY00840655 | Intermediary Contact (created with the insured or intermediary that links to it) |
+
+On preQC they are PTY00842030 / PTY00842034 / PTY00842031 / PTY00842029. **Never answer "No" to "A duplicate party was found"**: it saves a
+second copy. The tests stop there instead; the app cannot delete a party, so a copy can only be renamed.
 
 ## 📐 Conventions (all five products)
 
@@ -486,8 +504,8 @@ The code has no host hard-wired: every product reads `<KEY>_URL` from the env fi
 2. Run with `TEST_ENV=qc`, e.g. in PowerShell `$env:TEST_ENV='qc'; npm run smoke:pi`.
 3. Sign in to that host once: `npm run login:cdp -- pi` (each host has its own saved session).
 
-> ⚠️ The test data is preQC data: insured *Anjali Insured demo*, agency *Anjali,Intermediary* (7401474), the underwriters, the
-> task assignee and the schedule files in `<PRODUCT>/`. Check they exist in the target environment. If they don't, change them in
+> ⚠️ The test data is preQC data: insured *Smoke Insured*, agency *Smoke,Intermediary* (7401474), underwriter *Smoke,Underwriter* (all three created by the
+> party tests when missing, see *Smoke parties* below), the task assignee and the schedule files in `<PRODUCT>/`. Check they exist in the target environment. If they don't, change them in
 > `src/products/<key>/data.ts`, or in an env variable where one exists (`<KEY>_TASK_ASSIGNEE`, `<KEY>_SCHEDULE_IMPORT`, `<KEY>_TASK_TYPE`).
 
 ---

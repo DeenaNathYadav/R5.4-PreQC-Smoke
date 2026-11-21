@@ -1,5 +1,6 @@
 import path from 'path';
 import { SubmissionData } from '../../pages/advantagego/NewSubmissionPage';
+import { smokeSubmissionParties } from '../../parties/data';
 import { TaskData } from '../../pages/advantagego/QuotePage';
 import { UploadData } from '../../pages/advantagego/QuoteDocumentsPage';
 import { ConvertToQuoteData, SubmissionDetails } from '../../pages/advantagego/SubmissionPage';
@@ -9,10 +10,10 @@ import { PiSectionData } from './PiSectionsPage';
 
 // QC test data for the PI smoke flows.
 export const piSubmission = (): SubmissionData => ({
-  insured: 'Anjali Insured demo',
-  agencyName: 'Anjali,Intermediary',
-  agencySearch: 'Anjali',
-  agencyNumber: '7401474',
+  insured: smokeSubmissionParties.insured,
+  agencyName: smokeSubmissionParties.agencyName,
+  agencySearch: smokeSubmissionParties.agencySearch,
+  agencyNumber: smokeSubmissionParties.agencyNumber,
   inceptsOn: inceptionDate(),
   businessDescription: `PI Smoke ${new Date().toISOString().slice(0, 16)}`,
 });
@@ -20,7 +21,7 @@ export const piSubmission = (): SubmissionData => ({
 export const piSubmissionDetails: SubmissionDetails = {
   transactionType: 'New Business',
   businessCategory: 'SME',
-  underwriter: 'Agarwal,Nitin',
+  underwriter: smokeSubmissionParties.underwriter,
 };
 
 export const piQuote: ConvertToQuoteData = {

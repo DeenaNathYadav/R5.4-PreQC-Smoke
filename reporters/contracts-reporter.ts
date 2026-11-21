@@ -60,7 +60,7 @@ export default class ContractsReporter implements Reporter {
       const group = withoutProduct(r.test.split(' › ')[0]);
       const name = `${group} › ${r.test.split(' › ').slice(1).join(' › ')}`;
       if (name !== lastTest) {
-        const icon = r.status === 'passed' ? color.green('✔') : color.red('✘');
+        const icon = r.status === 'passed' ? color.green('✓') : color.red('✘');
         const note = r.status === 'passed' ? 'test passed' : 'test failed at a later step - the contracts below were created';
         console.log(`\n    ${icon} ${color.cyan(name)}  ${color.dim(note)}`);
         lastTest = name;
