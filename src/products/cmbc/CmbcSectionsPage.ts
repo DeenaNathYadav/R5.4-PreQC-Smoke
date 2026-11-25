@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test';
 import path from 'path';
+import { autoMap, dataImportTasks } from '../../pages/advantagego/dataImport';
 import { EditableGrid } from '../../pages/advantagego/agGrid';
 import { clickSave, expectToast, waitForIdle } from '../../pages/advantagego/entity';
 import { selectDropdown } from '../../pages/advantagego/kendo';
@@ -147,7 +148,7 @@ export class CmbcSectionsPage extends QuoteSectionsPage {
 
     await popup.getByRole('button', { name: 'Next', exact: true }).click();
     await expect(popup.getByText('Define Spreadsheet Mappings', { exact: true })).toBeVisible({ timeout: 60_000 });
-    await popup.getByRole('button', { name: 'Auto Mapping', exact: true }).click();
+    await autoMap(popup, /Original Full Address\s*-->/);
     const mapped = popup.locator('[col-id=displayName]');
     await expect(mapped.filter({ hasText: /Original Full Address\s*-->/ })).toBeVisible();
     await mapped.filter({ hasText: /Unique Schedule Id\s*-->/ }).click();
@@ -158,8 +159,8 @@ export class CmbcSectionsPage extends QuoteSectionsPage {
     await popup.getByRole('button', { name: 'Submit', exact: true }).click();
     expect((await submitted).ok(), 'schedule dataImport API succeeded').toBeTruthy();
 
-    const status = (text: RegExp) => expect(popup.locator('.data-import-list').getByText(text)).toBeVisible({ timeout: 180_000 });
-    const resume = () => popup.getByRole('button', { name: 'Continue', exact: true }).click();
+    // The task list only moves on when refreshed (src/pages/advantagego/dataImport.ts)
+    const { status, resume } = dataImportTasks(popup);
 
     await status(/Spreadsheet mappings have been validated/);
     await resume();
@@ -176,8 +177,13 @@ export class CmbcSectionsPage extends QuoteSectionsPage {
     const finalImport = popup.waitForResponse((r) => /api\/Import\/importFinalScheduleData/i.test(r.url()), { timeout: 120_000 });
     await popup.getByRole('button', { name: 'Import', exact: true }).click();
     expect((await finalImport).ok(), 'final schedule import succeeded').toBeTruthy();
-    await status(/Import completed successfully/);
-    await popup.close();
+    // "Import completed successfully", or now "1 record(s) imported successfully. Please continue to Finish the job."
+    await status(/(Import completed|record\(s\) imported) successfully/);
+    // Continue → Finish ends the job (the wizard closes itself); until then the rows are not on the schedule
+    await resume();
+    const closed = popup.waitForEvent('close', { timeout: 60_000 }).then(() => true, () => false);
+    await popup.getByRole('button', { name: 'Finish', exact: true }).click();
+    if (!(await closed)) await popup.close();
 
     await page.reload();
     await expect(page.getByText('Risk Sections', { exact: true })).toBeVisible();
@@ -223,11 +229,7 @@ export class CmbcSectionsPage extends QuoteSectionsPage {
     const popup = await popupPromise;
     await popup.waitForLoadState();
 
-    const newestTask = popup.locator('.data-import-list').first();
-    const continueNewest = async (status: RegExp) => {
-      await expect(newestTask).toContainText(status, { timeout: 240_000 });
-      await newestTask.getByRole('button', { name: 'Continue', exact: true }).click();
-    };
+    const { continueNewest } = dataImportTasks(popup);
 
     await continueNewest(/Geocoding is complete/);
     await expect(popup.getByText('Geocoding Results', { exact: true })).toBeVisible({ timeout: 60_000 });

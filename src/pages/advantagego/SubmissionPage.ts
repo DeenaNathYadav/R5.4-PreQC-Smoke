@@ -1,6 +1,6 @@
 import { Page, expect } from '@playwright/test';
 import { expandSectionFor, field, fieldContainer, selectAutocomplete, selectDropdown } from './kendo';
-import { acknowledgeWarnings, businessAction, referenceFromTitle, clickSave, saveAcknowledgingWarnings, waitForIdle } from './entity';
+import { acknowledgeWarnings, businessAction, referenceFromTitle, clickSave, saveAcknowledgingWarnings, trackApiRequests, waitForIdle } from './entity';
 
 /** Fields the New Submission form doesn't ask for, but Convert to Quote requires. */
 export interface SubmissionDetails {
@@ -38,6 +38,11 @@ export interface ConvertToQuoteData {
   requiredFields?: RequiredQuoteField[];
   requiredQuestions?: RequiredQuestion[];
   analysisCodes?: AnalysisCode[];
+  /**
+   * Extra time (ms) to wait on the conversion page after the required fields are filled, before Save: the app's own browser rules
+   * (e.g. PPP's default offering and risk section) run then. Only products that set it wait.
+   */
+  waitBeforeSaveMs?: number;
 }
 
 export interface CreatedQuote {
@@ -75,8 +80,22 @@ export class SubmissionPage {
     await acknowledgeWarnings(page);
   }
 
-  /** ⋮ → Convert to Quote → pick product → Confirm → fill required fields → Save. */
+  /**
+   * ⋮ → Convert to Quote → pick product → Confirm → wait for the conversion page to finish loading → fill required fields → wait
+   * again → Save. The conversion page keeps loading after its fields show (e.g. PPP loads its default offering's risk section into the
+   * page); touching it or saving before that finishes saves the quote without them (PPP: no cover, so every later save is refused).
+   */
   async convertToQuote(data: ConvertToQuoteData): Promise<CreatedQuote> {
+    const { page } = this;
+    const requests = trackApiRequests(page);
+    try {
+      return await this.convertAndSave(data, requests);
+    } finally {
+      requests.stop();
+    }
+  }
+
+  private async convertAndSave(data: ConvertToQuoteData, requests: ReturnType<typeof trackApiRequests>): Promise<CreatedQuote> {
     const { page } = this;
     await businessAction(page, 'Convert to Quote');
     await expect(page.getByText('Product and Method of Placement')).toBeVisible({ timeout: 30_000 });
@@ -84,8 +103,17 @@ export class SubmissionPage {
     await selectDropdown(page, 'Product', data.product);
     if (data.insuranceType) await expect(field(page, 'Insurance Type')).toHaveValue(data.insuranceType);
     if (data.contractStructure) await expect(field(page, 'Contract Structure')).toHaveValue(data.contractStructure);
+    // Picking the product makes the app load its offerings and their risk sections; Confirm before that has finished opens the
+    // conversion page without the offering's default risk section (PPP: the quote is then saved with no cover). Wait as a user does.
+    await waitForIdle(page);
+    await requests.settled(3_000, 60_000);
     await page.getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.waitForURL('**/ui/Quote/Conversion', { timeout: 60_000 });
+    // Let the conversion page finish setting itself up before touching any field, as a user does: it loads the defaulted offering
+    // and (PPP) its default risk section into the page, which the Save then stores. Filling fields while that is still loading has
+    // left PPP quotes saved without their risk section (no cover, so every later save is refused).
+    await waitForIdle(page);
+    await requests.settled(3_000, 90_000);
 
     for (const f of data.requiredFields ?? []) {
       await expandSectionFor(page, f.section, f.label);
@@ -135,6 +163,13 @@ export class SubmissionPage {
       }
     }
 
+    // Let the conversion page finish loading before saving: no API request in flight for 3 s (and the product's own extra wait)
+    await waitForIdle(page);
+    if (data.waitBeforeSaveMs) {
+      console.log(`Conversion page: fields filled, waiting ${Math.round(data.waitBeforeSaveMs / 1000)} s before Save`);
+      await page.waitForTimeout(data.waitBeforeSaveMs);
+    }
+    await requests.settled(3_000, 90_000);
     // The quote only gets a reference once saved: /ui/Quote/Conversion → /ui/Quote/Edit/<id>
     await saveAcknowledgingWarnings(page, async () => /\/ui\/Quote\/Edit\/\d+/.test(page.url()), 90_000);
     await page.waitForURL(/\/ui\/Quote\/Edit\/\d+/, { timeout: 90_000 });

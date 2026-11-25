@@ -290,8 +290,9 @@ const runId = stamp();
 const runDir = path.join(root, 'results', 'runs', runId);
 const authProjects = [...new Set(runnable.map((p) => p.authProject))];
 const passHas = (...flags) => opts.pass.some((a) => flags.some((f) => a === f || a.startsWith(`${f}=`)));
-// A product's flow tests are one ordered sequence (one worker); the second worker runs the smoke checks alongside (SMOKE_WORKERS overrides).
-const baseWorkers = Number(process.env.SMOKE_WORKERS) || 2;
+// One worker per product by default: two workers on the same account at once (flows + smoke checks / another chain's model quote)
+// made PI's Broker Commission entry fail. More only when asked for: --workers=N (or -j N) or SMOKE_WORKERS=N.
+const baseWorkers = Number(process.env.SMOKE_WORKERS) || 1;
 
 function workersFor(p) {
   if (passHas('--workers', '-j')) return [];

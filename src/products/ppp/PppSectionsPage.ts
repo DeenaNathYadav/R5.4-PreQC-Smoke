@@ -1,67 +1,53 @@
 import { expect } from '@playwright/test';
 import path from 'path';
+import { autoMap, dataImportTasks } from '../../pages/advantagego/dataImport';
 import { acknowledgeWarnings, clickSave, expectToast, waitForIdle } from '../../pages/advantagego/entity';
-import { QuotePage } from '../../pages/advantagego/QuotePage';
 import { QuoteSectionsPage, quoteId } from '../../pages/advantagego/QuoteSectionsPage';
 
 /** Quote → SECTIONS for PPP (UK Property Investors Protection Plan). */
 export class PppSectionsPage extends QuoteSectionsPage {
-  /** Chooses an offering; changing it asks "retain common data between the old and new offerings?" (Do not Retain). */
-  private async chooseOffering(name: string): Promise<void> {
-    const { page } = this;
-    const input = page.locator('input[placeholder="Offering:"], input[placeholder="Select"]').first();
-    await input.locator('xpath=ancestor::kendo-combobox[1]').locator('.k-input-button').click();
-    await page.getByRole('option', { name, exact: true }).click();
-    const retain = page.getByRole('dialog').filter({ hasText: 'retain common data' });
-    if (await retain.waitFor({ state: 'visible', timeout: 6_000 }).then(() => true, () => false)) {
-      await retain.getByRole('button', { name: /Do not Retain/i }).click();
+  /** Closes the "Unsaved changes – Please save changes to continue" notice (it overlays the page and blocks Save) with Ok. */
+  private async dismissUnsavedChanges(): Promise<void> {
+    const notice = this.page.locator('.cdk-overlay-container').filter({ hasText: /Unsaved changes/i });
+    if (await notice.isVisible().catch(() => false)) {
+      await notice.getByRole('button', { name: /^Ok$/i }).first().click();
+      await expect(notice.getByRole('heading', { name: /Unsaved changes/i })).toBeHidden({ timeout: 10_000 });
     }
-    await expect(input).toHaveValue(name);
-    await waitForIdle(page);
-    await page.waitForTimeout(3_000);
   }
 
   /**
-   * A quote converted from a submission shows the offering "Standard PPP" already but has no risk sections: they default only when the
-   * offering is changed, so another offering is chosen and then "Standard PPP" again (PPP with Risk Details, Property Damage, Rental
-   * Income, Public Liability and Additional Covers appear). The Broker Commission row's Override % is then set on the Details tab
-   * (switching tabs inside the app keeps the unsaved sections) and the quote is saved; the sections are proven by reopening it.
-   * Returns the offering and the validation text the first Save listed.
+   * From the quote's Details tab (Broker Commission already set there): the SECTIONS tab is clicked inside the app, as a user does.
+   * The app then defaults the offering "Standard PPP" and the PPP risk section (Risk Details, Property Damage, Rental Income, Public
+   * Liability, Additional Covers) - it does NOT when the Sections page is opened by its address, so this never uses page.goto first.
+   * The test never chooses the offering or adds a section: if the PPP section is not defaulted, it fails. Then Save, and the quote is
+   * reopened to prove the sections were saved. Returns the offering and what the Save listed (empty when nothing).
    */
-  async addPppSections(
+  async saveDefaultedSections(
     quoteUrl: string,
-    data: { riskSection: string; offering: string; otherOffering: string },
-    brokerPercent: string,
-  ): Promise<{ offering: string; validation: string }> {
+    data: { riskSection: string; offering: string },
+  ): Promise<{ offering: string; afterSave: string }> {
     const { page } = this;
-    await expect(async () => {
-      await page.goto(`/ui/Quote/Section/${quoteId(quoteUrl)}`);
-      await expect(page.getByText('Offering:')).toBeVisible({ timeout: 30_000 });
-    }).toPass({ timeout: 150_000, intervals: [2_000] });
     const input = page.locator('input[placeholder="Offering:"], input[placeholder="Select"]').first();
     const node = page.locator('span.k-treeview-leaf').filter({ has: page.getByText(data.riskSection, { exact: true }) }).first();
 
-    if (!(await node.isVisible())) {
-      if ((await input.inputValue()).trim() === data.offering) await this.chooseOffering(data.otherOffering);
-      await this.chooseOffering(data.offering);
-    }
-    if (!(await node.isVisible())) await this.addRiskSection(data.riskSection, { verifyTree: true }); // not defaulted: add it
-    await expect(node).toBeVisible({ timeout: 60_000 });
-    const offering = await input.inputValue();
-
-    await this.saveExpectingValidation();
-    const validation = (await page.locator('text=/Please enter|is required|Please select|Error\\(s\\)/').allInnerTexts()).join(' | ');
-
-    await page.getByRole('button', { name: 'Details', exact: true }).first().click();
-    await new QuotePage(page).addBrokerCommission(brokerPercent);
     await page.getByRole('button', { name: 'Sections', exact: true }).first().click();
+    await this.dismissUnsavedChanges();
+    // SECTIONS tab → the offering and the PPP risk section the app defaulted (checked as soon as they show, up to 60 s) → Save
+    await waitForIdle(page);
+    await expect(node, `the ${data.riskSection} risk section was not defaulted on the SECTIONS tab`).toBeVisible({ timeout: 60_000 });
+    await expect(input, 'the defaulted offering').toHaveValue(data.offering, { timeout: 30_000 });
+    const offering = (await input.inputValue()).trim();
+    console.log(`PPP sections: offering "${offering}" and the ${data.riskSection} risk section defaulted by the app`);
+
+    await waitForIdle(page);
     await clickSave(page);
     await acknowledgeWarnings(page, 8_000);
     await waitForIdle(page);
     const afterSave = (await page.locator('text=/Please enter|is required|Please select|Error\\(s\\)/').allInnerTexts()).join(' | ');
+    if (afterSave) console.log(`PPP sections Save listed: ${afterSave}`);
     await this.open(quoteUrl);
     await expect(node, `risk sections were not saved; the Save listed: ${afterSave || 'nothing'}`).toBeVisible({ timeout: 30_000 });
-    return { offering, validation };
+    return { offering, afterSave };
   }
 
   /** Quote → PPP → SCHEDULE: the schedule grid header (titled "PPPV2") (Import/Delete/⋮ buttons live here). */
@@ -128,10 +114,7 @@ export class PppSectionsPage extends QuoteSectionsPage {
 
     await popup.getByRole('button', { name: 'Next', exact: true }).click();
     await expect(popup.getByText('Define Spreadsheet Mappings', { exact: true })).toBeVisible({ timeout: 60_000 });
-    await popup.getByRole('button', { name: 'Auto Mapping', exact: true }).click();
-    // PPP answers with a "Define Mapping" notice (Original Full Address and address components detected) that blocks the page
-    const notice = popup.getByRole('dialog').filter({ hasText: 'Define Mapping' });
-    if (await notice.waitFor({ timeout: 10_000 }).then(() => true, () => false)) await notice.getByRole('button', { name: 'Ok', exact: true }).click();
+    await autoMap(popup, /Original Full Address\s*-->/); // also closes PPP's "Define Mapping" notice
     const mapped = popup.locator('[col-id=displayName]');
     await expect(mapped.filter({ hasText: /Original Full Address\s*-->/ })).toBeVisible();
     await mapped.filter({ hasText: /Unique Schedule Id\s*-->/ }).click();
@@ -142,8 +125,8 @@ export class PppSectionsPage extends QuoteSectionsPage {
     await popup.getByRole('button', { name: 'Submit', exact: true }).click();
     expect((await submitted).ok(), 'schedule dataImport API succeeded').toBeTruthy();
 
-    const status = (text: RegExp) => expect(popup.locator('.data-import-list').getByText(text)).toBeVisible({ timeout: 180_000 });
-    const resume = () => popup.getByRole('button', { name: 'Continue', exact: true }).click();
+    // The task list only moves on when refreshed (src/pages/advantagego/dataImport.ts)
+    const { status, resume } = dataImportTasks(popup);
 
     await status(/Spreadsheet mappings have been validated/);
     await resume();
@@ -160,8 +143,13 @@ export class PppSectionsPage extends QuoteSectionsPage {
     const finalImport = popup.waitForResponse((r) => /api\/Import\/importFinalScheduleData/i.test(r.url()), { timeout: 120_000 });
     await popup.getByRole('button', { name: 'Import', exact: true }).click();
     expect((await finalImport).ok(), 'final schedule import succeeded').toBeTruthy();
-    await status(/Import completed successfully/);
-    await popup.close();
+    // "Import completed successfully", or now "1 record(s) imported successfully. Please continue to Finish the job."
+    await status(/(Import completed|record\(s\) imported) successfully/);
+    // Continue → Finish ends the job (the wizard closes itself); until then the rows are not on the schedule
+    await resume();
+    const closed = popup.waitForEvent('close', { timeout: 60_000 }).then(() => true, () => false);
+    await popup.getByRole('button', { name: 'Finish', exact: true }).click();
+    if (!(await closed)) await popup.close();
 
     await page.reload();
     await expect(page.getByText('Risk Sections', { exact: true })).toBeVisible();
@@ -208,11 +196,7 @@ export class PppSectionsPage extends QuoteSectionsPage {
     const popup = await popupPromise;
     await popup.waitForLoadState();
 
-    const newestTask = popup.locator('.data-import-list').first();
-    const continueNewest = async (status: RegExp) => {
-      await expect(newestTask).toContainText(status, { timeout: 240_000 });
-      await newestTask.getByRole('button', { name: 'Continue', exact: true }).click();
-    };
+    const { continueNewest } = dataImportTasks(popup);
 
     await continueNewest(/Geocoding is complete/);
     await expect(popup.getByText('Geocoding Results', { exact: true })).toBeVisible({ timeout: 60_000 });

@@ -18,7 +18,7 @@ interface Ended {
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 // Annotations worth showing next to a passed test: the contracts it made, the premium it got, a commission fallback
-const SHOWN = ['party', 'submission', 'quote', 'policy', 'documents', 'multi quote', 'requote', 'premium', 'commission added by hand', 'commission not rated'];
+const SHOWN = ['party', 'vehicle lookup', 'submission', 'quote', 'policy', 'documents', 'multi quote', 'requote', 'premium', 'commission added by hand', 'commission not rated'];
 
 /**
  * Console output for the smoke runs, replacing Playwright's "list" reporter:
@@ -68,7 +68,9 @@ export default class ConsoleReporter implements Reporter {
     if (!this.live || !this.timer) return;
     // The line must never wrap: "\r" only returns to the start of the last screen row, so a wrapped line leaves a copy behind on
     // every redraw. Some terminals draw box and arrow symbols two columns wide, hence the margin and the plain ASCII markers.
-    const width = Math.max(20, Math.min(160, (process.stdout.columns || 100) - 12));
+    // The window's width asked fresh each time: on Windows process.stdout.columns often keeps the width from the start of the run
+    // after the window is made narrower, and the line then wraps.
+    const width = Math.max(20, Math.min(160, terminalColumns() - 12));
     const spin = color.cyan(SPINNER[this.frame++ % SPINNER.length]);
     const head = `  ${spin} ${progressBar(this.done, this.total, 16, true)} ${color.bold(`${this.done}/${this.total}`)}  ${color.dim(seconds(Date.now() - this.started))}`;
     const now = [...this.running].map(([t, r]) => {
@@ -76,7 +78,8 @@ export default class ConsoleReporter implements Reporter {
       return `${color.cyan('>')} ${t.title} ${color.dim(seconds(Date.now() - r.since))}${last}`;
     });
     const line = `${head}   ${now.join('   ') || color.dim('starting…')}`;
-    process.stdout.write('\r\x1b[2K' + truncate(line, width));
+    // Line wrapping off while it is drawn (ESC[?7l … ESC[?7h): if the width is ever off, the line is clipped at the edge, not wrapped
+    process.stdout.write('\r\x1b[2K\x1b[?7l' + truncate(line, width) + '\x1b[?7h');
   }
 
   // ------------------------------------------------------------------ reporter
@@ -330,6 +333,15 @@ export default class ConsoleReporter implements Reporter {
 
   printsToStdio(): boolean {
     return true;
+  }
+}
+
+/** The terminal's current width, read from the console now (getWindowSize) rather than the cached process.stdout.columns. */
+function terminalColumns(): number {
+  try {
+    return process.stdout.getWindowSize?.()[0] || process.stdout.columns || 100;
+  } catch {
+    return process.stdout.columns || 100;
   }
 }
 

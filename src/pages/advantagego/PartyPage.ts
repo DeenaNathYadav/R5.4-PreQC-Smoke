@@ -20,10 +20,23 @@ export class PartyPage {
 
   /** Header search, category Party: the reference of the party whose Display Name is exactly `displayName`, or null. */
   async find(displayName: string): Promise<FoundParty | null> {
+    // The app now and then draws the search before its labels or the result grid's columns have loaded (raw "COMMON.SEARCH…" keys, a
+    // grid with no headers): search again from a fresh Dashboard, up to 3 times, before giving up
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.searchOnce(displayName);
+      } catch (e) {
+        if (attempt >= 3) throw e;
+        await this.page.waitForTimeout(5_000);
+      }
+    }
+  }
+
+  private async searchOnce(displayName: string): Promise<FoundParty | null> {
     const { page } = this;
     await page.goto('/ui/home/dashboard');
     const keyword = page.getByPlaceholder('Enter keyword to search');
-    await expect(keyword).toBeVisible({ timeout: 90_000 });
+    await expect(keyword).toBeVisible({ timeout: 60_000 });
     await page.getByText('All', { exact: true }).first().click();
     await page.getByText('Party', { exact: true }).click();
     await keyword.fill(displayName);
@@ -43,7 +56,7 @@ export class PartyPage {
     await expect(async () => {
       if (!(await grid.isVisible())) await group.click();
       await expect(grid).toBeVisible({ timeout: 5_000 });
-    }).toPass({ timeout: 60_000, intervals: [2_000] });
+    }).toPass({ timeout: 30_000, intervals: [2_000] });
     // A row is this party only when one of its cells is exactly the name ("Smoke Insured", not "Smoke Insured Test 2210"). The
     // reference is in the grid's pinned-left part, a separate row element with the same row-index, so cells are collected by row-index.
     const read = () =>
@@ -149,14 +162,18 @@ export class PartyPage {
     const { page } = this;
     await this.openSection('Assigned Roles');
     const additional = page.getByText('Additional Data', { exact: true }).first();
-    // The role row's arrow opens it; right after a save the grid is still redrawing (or a toast covers it), so retry the click
-    await expect(async () => {
-      if (await additional.isVisible()) return;
-      const arrow = this.roleRow(role.role).locator('.ag-group-contracted:not(.ag-hidden)').first();
-      await arrow.scrollIntoViewIfNeeded({ timeout: 5_000 });
-      await arrow.click({ timeout: 5_000 });
-      await expect(additional).toBeVisible({ timeout: 5_000 });
-    }).toPass({ timeout: 60_000, intervals: [2_000] });
+    // The role row's arrow opens it. The page redraws a moment after it opens (the sanction check updates its status) and right after
+    // a save, which closes the row again: so open it, and open it again whenever it has closed.
+    const expand = () =>
+      expect(async () => {
+        if (await additional.isVisible()) return;
+        const arrow = this.roleRow(role.role).locator('.ag-group-contracted:not(.ag-hidden)').first();
+        await arrow.scrollIntoViewIfNeeded({ timeout: 5_000 });
+        await arrow.click({ timeout: 5_000 });
+        await expect(additional).toBeVisible({ timeout: 5_000 });
+      }).toPass({ timeout: 60_000, intervals: [2_000] });
+    await waitForIdle(page);
+    await expand();
     const tools = additional.locator('xpath=ancestor::*[.//button[@title="Add New"]][1]');
     const grid = additional.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
     // The row whose name cell is the field ("Branch*" for a mandatory one); the value cell can share its line ("1 item(s) selected")
@@ -166,12 +183,27 @@ export class PartyPage {
         .filter({ has: page.locator('.ag-cell').filter({ hasText: new RegExp(`^\\s*${escapeRegExp(name)}\\s*\\*?\\s*$`) }) })
         .first();
 
-    // The rows fill in a moment after the role opens
-    await grid.locator('.ag-center-cols-container .ag-row').first().waitFor({ timeout: 5_000 }).catch(() => {});
-    const missing: string[] = [];
-    for (const name of Object.keys(role.additional)) if (!(await dataRow(name).isVisible())) missing.push(name);
+    // Which fields are missing: only trusted when Additional Data stayed open while reading and two readings 3 s apart agree, so a row
+    // that closed (or rows still filling in) is never taken for missing fields, which would add them a second time.
+    const readMissing = async () => {
+      await expand();
+      await grid.locator('.ag-center-cols-container .ag-row').first().waitFor({ timeout: 5_000 }).catch(() => {});
+      const names: string[] = [];
+      for (const name of Object.keys(role.additional!)) if (!(await dataRow(name).isVisible())) names.push(name);
+      return (await additional.isVisible()) ? names.join('|') : null;
+    };
+    let missingKey: string | null = null;
+    await expect(async () => {
+      const first = await readMissing();
+      await page.waitForTimeout(3_000);
+      const second = await readMissing();
+      expect(first !== null && first === second, 'Additional Data read twice the same, with the role row open').toBe(true);
+      missingKey = first;
+    }).toPass({ timeout: 90_000, intervals: [2_000] });
+    const missing = missingKey ? (missingKey as string).split('|') : [];
     if (!missing.length || this.checkOnly) return missing;
 
+    await expand();
     await tools.locator('button[title="Add New"]').first().click();
     const dialog = page.getByRole('dialog').filter({ hasText: 'Add Additional Fields' });
     await expect(dialog).toBeVisible({ timeout: 30_000 });

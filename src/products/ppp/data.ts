@@ -34,17 +34,16 @@ export const pppQuote: ConvertToQuoteData = {
     { section: 'Submission Information', label: 'All buildings constructed after 01/01/2000?', value: 'Yes' },
     { section: 'Claims History', label: 'Number of years claims experience', value: '0' },
   ],
+  // The 3 mandatory fields → wait 30 s (the app's browser rules default the offering and PPP risk section) → Save
+  waitBeforeSaveMs: 30_000,
 };
 
-// Quote → Sections. A quote converted from a submission has no risk section: the offering (the first one the product offers) is chosen and
-// the PPP risk section added. The quote created from the submission is the model every other PPP quote is a ⋮ → Model copy of
-// (there is no fixed reference quote).
+// Quote → Sections. When the SECTIONS tab is clicked inside a converted quote, the app defaults this offering and risk section (the test
+// never chooses or adds them; it checks they are there). The quote created from the submission is the model every other PPP quote is a
+// ⋮ → Model copy of (there is no fixed reference quote).
 export const pppSections = {
   riskSection: 'PPP',
   offering: 'Standard PPP',
-  // A new quote already shows the offering, so choosing it again changes nothing: the sections default only when the offering is
-  // changed, so another offering is chosen first and "Standard PPP" afterwards
-  otherOffering: 'Bridge',
 };
 
 // Details → Commission: the Broker Commission row is updated (or added when missing) with this Override %

@@ -1,5 +1,5 @@
-import { Page, expect } from '@playwright/test';
-import { businessAction, clickSave, expectToast, reloadWithMenu, waitForIdle } from './entity';
+import { Locator, Page, expect, test } from '@playwright/test';
+import { businessAction, clickSave, expectToast, waitForIdle } from './entity';
 import { expandSectionFor, field } from './kendo';
 
 export const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -124,42 +124,54 @@ export class QuoteSectionsPage {
    * Passes when the success toast "Price is returned back from the rating engine" appears.
    * Returns false (only with `dialogOptional`) when the app priced without showing the section dialog.
    */
-  async getPrice(riskSections: string[], { dialogOptional = false, retry = true } = {}): Promise<boolean> {
-    try {
-      return await this.getPriceOnce(riskSections, { dialogOptional });
-    } catch (e) {
-      // The rating engine now and then answers "Pricing in progress" and never returns the price in time, or an error with no price:
-      // try once more from a fresh page (as the PPP endorsement pricing does). A business refusal (the schedule is not geocoded) is
-      // not retried: the caller acts on it.
-      if (!retry || /Geocoding for all schedule items/i.test(String((e as Error)?.message))) throw e;
-      console.log(`Get Price failed, retrying once: ${String((e as Error).message).split('\n')[0]}`);
-      await reloadWithMenu(this.page);
-      return await this.getPriceOnce(riskSections, { dialogOptional });
-    }
-  }
-
-  private async getPriceOnce(riskSections: string[], { dialogOptional = false } = {}): Promise<boolean> {
-    const { page } = this;
-    await businessAction(page, 'Get Price');
-    const acknowledge = page.getByText('ACKNOWLEDGE', { exact: true }).first();
-    const wait = dialogOptional ? 15_000 : 60_000;
-    // The save that runs before pricing can come back with a warnings banner (e.g. "ICOW Net Minimum Premium has been
-    // breached"); the section dialog only opens once it is acknowledged.
-    const answered = await this.priceDialog.or(acknowledge).first().waitFor({ timeout: wait }).then(() => true, () => false);
-    if (answered && !(await this.priceDialog.isVisible())) await acknowledge.click();
-    const shown = await this.priceDialog.waitFor({ timeout: wait }).then(() => true, () => false);
+  async getPrice(riskSections: string[], { dialogOptional = false } = {}): Promise<boolean> {
+    const shown = await this.openPriceDialog(dialogOptional ? 15_000 : 60_000);
     // When Issue Quote / Taken Up ask for a re-price ("…please press Get Price") the app can also price straight away
     // without the dialog; the caller carries on from the page as it is.
     if (!shown && dialogOptional) {
-      await waitForIdle(page);
+      await waitForIdle(this.page);
       return false;
     }
     await this.confirmPriceDialog(riskSections);
     return true;
   }
 
-  /** With the Get Price dialog open: sections listed and ticked → Get Price → wait for the rating engine. */
-  async confirmPriceDialog(riskSections: string[]): Promise<void> {
+  /** ⋮ → Get Price, acknowledging a warnings banner if one comes first. Returns whether the section dialog opened within `wait`. */
+  private async openPriceDialog(wait: number): Promise<boolean> {
+    const { page } = this;
+    await businessAction(page, 'Get Price');
+    const acknowledge = page.getByText('ACKNOWLEDGE', { exact: true }).first();
+    // The save that runs before pricing can come back with a warnings banner (e.g. "ICOW Net Minimum Premium has been
+    // breached"); the section dialog only opens once it is acknowledged.
+    const answered = await this.priceDialog.or(acknowledge).first().waitFor({ timeout: wait }).then(() => true, () => false);
+    if (answered && !(await this.priceDialog.isVisible())) await acknowledge.click();
+    return this.priceDialog.waitFor({ timeout: wait }).then(() => true, () => false);
+  }
+
+  /**
+   * With the Get Price dialog open: sections listed and ticked → Get Price → wait for the rating engine.
+   * The rating engine sometimes never sends its price back (the server answers "Pricing in progress" and then nothing, with
+   * no warning or error). When no price comes back in 2 minutes, the page is reloaded and Get Price pressed once more.
+   * `refusal`: text the app can answer with instead of pricing (MTP: schedule not geocoded), thrown at once as `refusal.error()`.
+   */
+  async confirmPriceDialog(riskSections: string[], refusal?: { text: Locator; error: () => Error }): Promise<void> {
+    const { page } = this;
+    for (let attempt = 1; ; attempt++) {
+      const errors = await this.submitPriceDialog(riskSections, refusal);
+      if (errors === undefined) return;
+      const said = errors.length ? `; the app said: ${errors.join(' | ')}` : '';
+      if (attempt === 2) throw new Error(`Get Price: no "Price is returned back from the rating engine" (tried twice)${said}`);
+      console.log(`Get Price: no price back from the rating engine in 2 min${said}; reloading and pressing Get Price once more`);
+      test.info().annotations.push({ type: 'get price retried', description: `no price back in 2 min${said}` });
+      test.info().setTimeout(test.info().timeout + 4 * 60_000); // room for the retry, whatever time the test had set for itself
+      await page.reload();
+      await waitForIdle(page);
+      expect(await this.openPriceDialog(60_000), 'the Get Price dialog opened for the retry').toBeTruthy();
+    }
+  }
+
+  /** One press of the dialog's Get Price. Returns undefined when the price came back, otherwise the error toasts seen meanwhile. */
+  private async submitPriceDialog(riskSections: string[], refusal?: { text: Locator; error: () => Error }): Promise<string[] | undefined> {
     const { page } = this;
     const dialog = this.priceDialog;
     // Checkboxes aren't linked to their labels, so check the section names are listed and all boxes ticked.
@@ -167,19 +179,22 @@ export class QuoteSectionsPage {
     for (const box of await dialog.locator('input[type=checkbox]').all()) await expect(box).toBeChecked();
 
     const priced = page.waitForResponse((r) => /api\/quote\/GetPrice/i.test(r.url()), { timeout: 120_000 });
+    priced.catch(() => undefined); // only awaited once the price is back; a refusal or retry must not leave it unhandled
     await dialog.getByRole('button', { name: 'Get Price', exact: true }).click();
     // Matched on text alone: the toast's colour class varies (an MTA once showed it without toast-success). An error toast the
     // rating engine answers with instead disappears after a few seconds, so its text is kept for the failure message.
     const errors = new Set<string>();
     const errorToast = page.locator('.toast.toast-error');
+    const toast = page.locator('.toast').filter({ hasText: 'Price is returned back from the rating engine' }).first();
     const returned = await expect(async () => {
       for (const t of await errorToast.allInnerTexts().catch(() => [])) if (t.trim()) errors.add(t.trim().replace(/\s+/g, ' '));
-      await expect(page.locator('.toast').filter({ hasText: 'Price is returned back from the rating engine' }).first()).toBeVisible({ timeout: 500 });
+      if (refusal && (await refusal.text.first().isVisible())) return;
+      await expect(toast).toBeVisible({ timeout: 500 });
     }).toPass({ timeout: 120_000, intervals: [500] }).then(() => true, () => false);
-    if (!returned) {
-      throw new Error(`Get Price: no "Price is returned back from the rating engine"${errors.size ? `; the app said: ${[...errors].join(' | ')}` : ''}`);
-    }
+    if (refusal && (await refusal.text.first().isVisible())) throw refusal.error();
+    if (!returned) return [...errors];
     expect((await priced).ok(), 'GetPrice API succeeded').toBeTruthy();
+    return undefined;
   }
 }
 

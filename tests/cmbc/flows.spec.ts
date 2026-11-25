@@ -14,6 +14,7 @@ import { cmbcDocumentWait,
 } from '../../src/products/cmbc/flows/quote';
 import { cmbc } from '../../src/products/cmbc';
 import { CmbcSectionsPage } from '../../src/products/cmbc/CmbcSectionsPage';
+import { getCmbcCommission } from '../../src/products/cmbc/commission';
 import {
   cmbcCancellation,
   cmbcCommission,
@@ -124,12 +125,13 @@ test.describe(() => {
       steps.needs('Convert to Quote with PDBI and Liability child sections');
       const quote = new QuotePage(page);
       await quote.open(chain.quoteUrl);
-      // The connector leaves "not rated" sections empty: they get the broker %. When Get Commission errors, the Broker Commission is
-      // added by hand ("+", or its blank % filled) so the chain carries on, and this test then fails with the connector's error.
-      const { rejected, error } = await quote.getCommissionOrAddManually(cmbcCommission.brokerPercent);
-      if (rejected.length) testInfo.annotations.push({ type: 'commission not rated', description: rejected.join(', ') });
+      // Get Commission must fill every row's Standard %. If it errors or leaves one empty, 12 is put in every row's Selected % and
+      // saved first (so the chain carries on), then this test fails with the reason.
+      const { rated, notRated, failure } = await getCmbcCommission(page, cmbcCommission.brokerPercent);
+      if (rated.length) testInfo.annotations.push({ type: 'commission rated', description: rated.join(', ') });
+      if (notRated.length) testInfo.annotations.push({ type: 'commission not rated', description: notRated.join(', ') });
       cmbcModel.url = chain.quoteUrl; // sections, schedule and commission are on it now: the model the other CMBC quotes are copied from
-      if (error) throw error;
+      if (failure) throw new Error(failure);
     });
 
     test('Get Pricing', async ({ page }, testInfo) => {

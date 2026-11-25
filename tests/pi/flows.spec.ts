@@ -3,11 +3,12 @@ import type { Page } from '@playwright/test';
 import { test, expect } from '../../src/fixtures';
 import { businessAction, listActions } from '../../src/pages/advantagego/entity';
 import { cancelPolicyMidTerm, confirmEndorsement, confirmMta, endorsePolicy, issueEndorsement, priceEndorsement, priceMta, reinstatePolicy, reverseEndorsement, startEndorsement, startMidTermCancellationMta, takeUpEndorsement } from '../../src/products/pi/flows/policy';
-import { addPiSections, createBoundPolicy, createPiModelCopy, issueWithSelfApproval, piModel } from '../../src/products/pi/flows/quote';
+import { addPiBrokerAndSections, createBoundPolicy, createPiModelCopy, issueWithSelfApproval, piModel } from '../../src/products/pi/flows/quote';
 import { env } from '../../src/config/env';
 import { pi } from '../../src/products/pi';
 import { piDecline, piNotTakenUp, piLost, piDocument, piEndorsement, piCancellation, piReinstatement, piQuote, piCommission, piSections, piSubmission, piSubmissionDetails, piTask } from '../../src/products/pi/data';
 import { PiSectionsPage } from '../../src/products/pi/PiSectionsPage';
+import { addPiBrokerCommission, expectPiBrokerCommission } from '../../src/products/pi/commission';
 import { PolicyPage } from '../../src/pages/advantagego/PolicyPage';
 import { QuoteDocumentsPage } from '../../src/pages/advantagego/QuoteDocumentsPage';
 import { SearchPage } from '../../src/pages/advantagego/SearchPage';
@@ -113,30 +114,29 @@ test.describe(() => {
     });
 
 
-    test('Get Pricing', async ({ page }, testInfo) => {
+    // PI is not eligible for ⋮ → Get Commission. Details → Commission → "+" → Broker Commission → Selected % = 12 (Standard % is
+    // read-only), then - without saving - the SECTIONS tab: Accountants risk section, its details, limit and excess, and one Save
+    // that stores the commission and the section together. Next Stage → Issue Quote need this Broker Commission.
+    test('Add Broker Commission', async ({ page }, testInfo) => {
       steps.needs('Convert to Quote');
-      const sections = new PiSectionsPage(page);
-      await addPiSections(page, chain.quoteUrl);
+      test.setTimeout(6 * 60_000);
+      const outcome = await addPiBrokerAndSections(page, chain.quoteUrl);
+      testInfo.annotations.push({ type: 'broker commission', description: `${outcome}, Selected % = ${piCommission.brokerPercent}` });
+      await expectPiBrokerCommission(page, piCommission.brokerPercent);
+      piModel.url = chain.quoteUrl; // sections and commission are on it now: the model the other PI quotes are copied from
+    });
 
-      // Pass = "Price is returned back from the rating engine" success toast
+    // ⋮ → Get Price on the saved sections. Pass = "Price is returned back from the rating engine" success toast
+    test('Get Pricing', async ({ page }, testInfo) => {
+      steps.needs('Add Broker Commission');
+      const sections = new PiSectionsPage(page);
+      await sections.open(chain.quoteUrl);
       await sections.getPrice([piSections.riskSection]);
 
       const premium = await readPremium(page, chain.quoteUrl);
       expect(premium.policyPeriodGross, 'Policy Period Premium Gross of Comm. & IPT').toBeGreaterThan(0);
       testInfo.annotations.push({ type: 'premium', description: JSON.stringify(premium) });
       console.log(`PI premium: ${JSON.stringify(premium)}`);
-    });
-
-    // PI is not eligible for ⋮ → Get Commission: the Override % of the defaulted Broker Commission row is set manually.
-    // Next Stage → Issue Quote need this Broker Commission row. It is only kept once the quote has its risk
-    // sections, so this runs after "Get Pricing" (Issue Quote re-prices when commission changed the premium).
-    test('Add Broker Commission', async ({ page }) => {
-      steps.needs('Convert to Quote');
-      const quote = new QuotePage(page);
-      await quote.open(chain.quoteUrl);
-      await quote.addBrokerCommission(piCommission.brokerPercent); // existing Broker Commission row → its %, otherwise a row is added with +
-      await quote.expectBrokerCommission();
-      piModel.url = chain.quoteUrl; // sections and commission are on it now: the model the other PI quotes are copied from
     });
 
     test('Quote create task', async ({ page }) => {

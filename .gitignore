@@ -1,8 +1,20 @@
+# Dependencies
 node_modules/
+
+# Local credentials and browser sign-in data
 .auth/
-test-results/
-playwright-report/
-results/
 .env
 .env.*
 !.env.example
+
+# Generated Playwright results, reports, and caches
+results/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Local handover material, archives, and spreadsheet backups
+handover/
+*.zip
+*.original.xlsx

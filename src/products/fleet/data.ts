@@ -103,7 +103,7 @@ export const fleetDecline = { reason: 'Decline - Other', description: 'Fleet smo
 // Not Taken Up / Mark as Lost: no fixed reason (the first one the list offers is used and reported); the description is mandatory
 export const fleetNotTakenUp = { description: 'Fleet smoke test: not taken up by automation' };
 // Vehicle added, then changed, then deleted by hand on the schedule grid of a Model copy
-export const fleetManualVehicle = { registration: 'SM24AUT', updatedRegistration: 'SM24AUU' };
+export const fleetManualVehicle = { registration: 'SM24 AUT', updatedRegistration: 'SM24 AUU' };
 export const fleetLost = { description: 'Fleet smoke test: marked as lost by automation' };
 
 export const fleetEndorsement = {

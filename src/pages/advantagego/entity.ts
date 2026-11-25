@@ -7,6 +7,37 @@ export async function waitForIdle(page: Page): Promise<void> {
   await page.locator('.processing-overlay').first().waitFor({ state: 'hidden', timeout: 90_000 }).catch(() => {});
 }
 
+/**
+ * Starts counting the app's API requests that are in flight (from now on). The returned `settled()` waits until none has been in
+ * flight for `quietMs`, i.e. the page has finished loading what it was asked for (up to `timeout`, then it returns anyway), and
+ * `stop()` removes the listeners. Long-lived calls (notifications, heartbeats, SignalR) are not counted.
+ */
+export function trackApiRequests(page: Page): { settled: (quietMs?: number, timeout?: number) => Promise<void>; stop: () => void } {
+  const ignored = /signalr|notification|heartbeat|negotiate/i;
+  const inFlight = new Set<import('@playwright/test').Request>();
+  let lastChange = Date.now();
+  const counts = (r: import('@playwright/test').Request) => /\/api\//i.test(r.url()) && !ignored.test(r.url());
+  const started = (r: import('@playwright/test').Request) => { if (counts(r)) { inFlight.add(r); lastChange = Date.now(); } };
+  const ended = (r: import('@playwright/test').Request) => { if (inFlight.delete(r)) lastChange = Date.now(); };
+  page.on('request', started);
+  page.on('requestfinished', ended);
+  page.on('requestfailed', ended);
+  return {
+    async settled(quietMs = 3_000, timeout = 90_000) {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        if (inFlight.size === 0 && Date.now() - lastChange >= quietMs) return;
+        await page.waitForTimeout(250);
+      }
+    },
+    stop() {
+      page.off('request', started);
+      page.off('requestfinished', ended);
+      page.off('requestfailed', ended);
+    },
+  };
+}
+
 export async function clickSave(page: Page): Promise<void> {
   await waitForIdle(page);
   await page.locator('button[title="Save"]').first().click();

@@ -1,5 +1,5 @@
 import { Page, expect, test } from '@playwright/test';
-import { listActions, saveAcknowledgingWarnings, waitForIdle } from '../../../pages/advantagego/entity';
+import { acknowledgeWarnings, clickSave, listActions, saveAcknowledgingWarnings, waitForIdle } from '../../../pages/advantagego/entity';
 import { fieldContainer } from '../../../pages/advantagego/kendo';
 import { NewSubmissionPage } from '../../../pages/advantagego/NewSubmissionPage';
 import { CreatedPolicy, PolicyPage } from '../../../pages/advantagego/PolicyPage';
@@ -10,6 +10,7 @@ import { recordContract } from '../../../support/contracts';
 import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { CmbcSectionsPage } from '../CmbcSectionsPage';
+import { getCmbcCommission } from '../commission';
 import { cmbcCommission, cmbcQuote, cmbcScheduleFile, cmbcSections, cmbcSubmission, cmbcSubmissionDetails } from '../data';
 
 // How long CMBC waits for generated documents to reach Completed: its documents take several minutes on this host.
@@ -77,20 +78,20 @@ export async function buildCmbcSections(page: Page, quoteUrl: string): Promise<s
   const validation = (await page.locator('text=/Please enter|Error\\(s\\)/').allInnerTexts()).join(' | ');
 
   // The sections are only in memory until their Save succeeds, and it is refused while any section has no commission ("Please enter a
-  // valid commission value for Selected %") or a required detail is empty. ⋮ Get Commission is a test of its own (on the saved quote),
-  // so here every section's Selected % is typed in on the Details tab (switched inside the app, so the sections stay in memory), then
-  // back to Sections → Save. Only when the quote has no commission rows to type into yet does ⋮ Get Commission run here to create them.
-  const quote = new QuotePage(page);
-  if (!(await quote.fillEmptyCommissionRates(cmbcCommission.brokerPercent))) {
-    const commission = await quote.getCommissionOrAddManually(cmbcCommission.brokerPercent);
-    test.info().annotations.push({ type: 'commission', description: 'no commission rows yet: ⋮ Get Commission created them' });
-    if (commission.error) {
-      test.info().annotations.push({ type: 'commission added by hand', description: commission.error.message.split('\n')[0] });
-    }
-  }
+  // valid commission value for Selected %"). So ⋮ Get Commission runs first: it fills every section's Standard % and Selected %. Only
+  // when it errors or leaves a Standard % empty is 12 put in every row by hand (on the Details tab, switched inside the app so the
+  // sections stay in memory); the "Get Commission" test reports that failure, here the 12% is enough to carry on building the quote.
+  const commission = await getCmbcCommission(page, cmbcCommission.brokerPercent);
+  if (commission.failure) test.info().annotations.push({ type: 'commission set to 12% by hand', description: commission.failure });
   await page.getByRole('button', { name: 'Sections', exact: true }).first().click();
-  await sections.save();
+  // Get Commission usually saves the quote itself ("Updated for Quote"), and then this Save has nothing left to save and shows no
+  // "Quote Saved" toast: so no toast is required here. Reopening the quote and finding the sections proves they were saved.
+  await clickSave(page);
+  await acknowledgeWarnings(page, 8_000);
+  await waitForIdle(page);
+  const afterSave = (await page.locator('text=/Please enter|is mandatory|Error\\(s\\)/').allInnerTexts()).join(' | ');
   await sections.open(quoteUrl);
+  await expect(page.getByText('PDBI', { exact: true }).first(), `risk sections were not saved; the Save listed: ${afterSave || 'nothing'}`).toBeVisible({ timeout: 30_000 });
   await sections.expectCmbcStructure(cmbcSections);
   return validation;
 }

@@ -12,7 +12,16 @@ export async function ensureSmokeParties(page: Page): Promise<void> {
   if (smokePartiesChecked) return;
   const parties = new PartyPage(page);
   for (const party of [smokeInsured, smokeIntermediary, smokeUnderwriter]) {
-    if (!(await parties.find(party.displayName))) await ensureParty(page, party);
+    // A search the app could not draw (empty result grid, labels not loaded) must not stop the submission: the parties exist once
+    // set up, and the party tests report a real problem. Only a search that clearly finds nothing creates the party.
+    let found: Awaited<ReturnType<PartyPage['find']>>;
+    try {
+      found = await parties.find(party.displayName);
+    } catch (e) {
+      console.log(`Party check for ${party.displayName} skipped, the search could not be read: ${(e as Error).message.split('\n')[0]}`);
+      continue;
+    }
+    if (!found) await ensureParty(page, party);
   }
   smokePartiesChecked = true;
 }

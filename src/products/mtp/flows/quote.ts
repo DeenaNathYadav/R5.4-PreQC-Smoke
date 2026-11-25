@@ -19,6 +19,7 @@ import { recordContract } from '../../../support/contracts';
 import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { MtpSectionsPage } from '../MtpSectionsPage';
+import { getMtpCommission } from '../commission';
 import {
   mtpCommission,
   mtpProductLiability,
@@ -84,14 +85,11 @@ export async function buildMtpSections(page: Page, quoteUrl: string): Promise<st
   const validation = (await page.locator('text=/Please enter|is mandatory|Error\\(s\\)/').allInnerTexts()).join(' | ');
 
   // Get Commission stays on the Sections page (the sections are only in memory until saved)
-  const quote = new QuotePage(page);
-  // The sections that could not be rated (error 90063) keep an empty Selected %: fill them on the Details tab and come back. The tabs
-  // are switched inside the app (no page load) so the unsaved sections stay in memory. When Get Commission errors, the Broker
-  // Commission goes on by hand there instead, so the sections can still be saved; the "Get Commission" test reports the error.
-  const commission = await quote.getCommissionOrAddManually(mtpCommission.brokerPercent);
-  if (commission.error) {
-    test.info().annotations.push({ type: 'commission added by hand', description: commission.error.message.split('\n')[0] });
-  }
+  // Get Commission should fill every row's Standard %; rows with an empty Selected % get 12. When it errors or leaves a Standard %
+  // empty, every row's Selected % is set to 12 instead (on the Details tab, switched inside the app so the unsaved sections stay in
+  // memory) so the sections can still be saved; the "Get Commission" test reports that failure.
+  const commission = await getMtpCommission(page, mtpCommission.brokerPercent);
+  if (commission.failure) test.info().annotations.push({ type: 'commission set to 12% by hand', description: commission.failure });
   await page.getByRole('button', { name: 'Sections', exact: true }).first().click();
   // Save, then prove it by reopening the quote: the "Quote Saved" toast is easy to miss, the sections in the tree are not
   await clickSave(page);

@@ -6,6 +6,7 @@ import { UploadData } from '../../pages/advantagego/QuoteDocumentsPage';
 import { ConvertToQuoteData, SubmissionDetails } from '../../pages/advantagego/SubmissionPage';
 import { pi } from '.';
 import { cancellationDate, inceptionDate } from '../../support/dates';
+import { persisted } from '../../support/runState';
 import { PiSectionData } from './PiSectionsPage';
 
 // QC test data for the PI smoke flows.
@@ -43,11 +44,17 @@ export const piSections: PiSectionData = {
 };
 
 // Quote → ⋮ → Create Task (Underwriting Referral tasks need a reason and an assignee)
+// The task subject is unique per run (a Model copy carries older tasks) and kept on disk for the run: a failed test restarts the
+// worker, which loads this file again, and a subject built at load time would then no longer match the task created earlier.
+const piTaskState = persisted('pi-task', { subject: '' });
 export const piTask: TaskData = {
   taskType: 'Underwriting Referral - PI',
   reason: 'Cover',
   assignee: pi.env('TASK_ASSIGNEE') || '', // empty = the signed-in user
-  subject: `PI smoke task ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`, // unique per run: a Model copy carries older tasks
+  get subject(): string {
+    if (!piTaskState.subject) piTaskState.subject = `PI smoke task ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`;
+    return piTaskState.subject;
+  },
 };
 
 // Quote → DOCUMENTS → Attach File

@@ -5,11 +5,13 @@ import { NewSubmissionPage } from '../../../pages/advantagego/NewSubmissionPage'
 import { CreatedPolicy, PolicyPage } from '../../../pages/advantagego/PolicyPage';
 import { QuoteDocumentsPage } from '../../../pages/advantagego/QuoteDocumentsPage';
 import { QuotePage } from '../../../pages/advantagego/QuotePage';
+import { quoteId } from '../../../pages/advantagego/QuoteSectionsPage';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
 import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { PppSectionsPage } from '../PppSectionsPage';
+import { addPppBrokerCommission } from '../commission';
 import { pppCommission, pppQuote, pppScheduleFile, pppSections, pppSubmission, pppSubmissionDetails } from '../data';
 
 // How long PPP waits for generated documents to reach Completed: its documents take several minutes on this host.
@@ -24,7 +26,11 @@ export const pppDocumentWait = { retries: 6, delayMs: 20_000 };
  */
 export const pppModel = persisted('ppp-model', { url: '' }); // kept for the run, so a failed test does not lose it
 
-/** New Submission (inception today − 10 days) → Convert to Quote: the bare quote, with no offering or risk section yet. */
+/**
+ * New Submission (inception today − 10 days) → Convert to Quote: on the conversion page only the 3 mandatory fields → Save. The quote
+ * is created and the page stays on its Details tab (the app has defaulted the offering "Standard PPP" and a Broker Commission row).
+ * The next steps, as a user does them, continue on this same page: setPppBrokerCommission, then savePppDefaultedSections.
+ */
 export async function createPppSubmissionQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
   const newSubmission = new NewSubmissionPage(page);
   await newSubmission.open();
@@ -35,19 +41,52 @@ export async function createPppSubmissionQuote(page: Page): Promise<{ submission
   const submission = new SubmissionPage(page);
   await submission.open(contractId);
   await submission.completeDetails(pppSubmissionDetails);
-  const quote = await submission.convertToQuote(pppQuote);
+  // The conversion Save must carry the risk section the app defaulted on the conversion page (RiskSections[0], TrackingState
+  // "Added"): without it the quote has no cover and every later save is refused
+  const saveRequest = page.waitForRequest((r) => /api\/quote\/SaveQuote/i.test(r.url()) && r.method() === 'POST', { timeout: 6 * 60_000 });
+  saveRequest.catch(() => undefined);
+  const quote = await submission.convertToQuote(pppQuote); // saves, and stays on the new quote's Details tab
   await recordContract('PPP Quote', quote.reference, quote.url);
+  const body = (await saveRequest).postDataJSON() as { Entity?: { RiskSections?: { TrackingState?: string }[] }; RiskSections?: { TrackingState?: string }[] };
+  const riskSections = (body.Entity ?? body).RiskSections ?? [];
+  console.log(`PPP conversion Save: ${riskSections.length} risk section(s) [${riskSections.map((s) => s.TrackingState).join(', ')}]`);
+  expect(riskSections.length, 'the conversion Save carries the risk section the app defaulted (PPP)').toBeGreaterThan(0);
   return { submissionId: contractId, ...quote };
 }
 
+/** True when the page is already on this quote (Details or Sections tab), so a step can carry on there without reloading it. */
+const onQuote = (page: Page, quoteUrl: string) => new RegExp(`/ui/Quote/(Edit|Section)/${quoteId(quoteUrl)}(\\b|$)`).test(page.url());
+
 /**
- * A complete PPP quote built from a submission: offering + PPP risk section, the Broker Commission override and the geocoded schedule.
- * Becomes the model (pppModel). The covers the rating engine asks for are not selected here yet: the first run lists them.
+ * Step 2 after conversion: Details → Commission → Selected % = 12 on the Broker Commission row (Standard % is read-only) → Save.
+ * Carries on on the page the conversion left (no reload, as a user does it); opens the quote only when the page is elsewhere.
+ */
+export async function setPppBrokerCommission(page: Page, quoteUrl: string): Promise<'added' | 'set' | 'kept'> {
+  const quote = new QuotePage(page);
+  if (!onQuote(page, quoteUrl)) await quote.open(quoteUrl);
+  else if (/\/ui\/Quote\/Section\//.test(page.url())) await page.getByRole('button', { name: 'Details', exact: true }).first().click();
+  return addPppBrokerCommission(page, pppCommission.brokerPercent); // 12% → Save
+}
+
+/**
+ * Step 3 after conversion: the SECTIONS tab clicked (on the same page, as a user does it) → wait for the offering "Standard PPP" and
+ * the PPP risk section the app defaults → Save → reopen to prove both were saved. Opens the quote first only when the page is
+ * elsewhere. The test never chooses the offering or adds a section.
+ */
+export async function savePppDefaultedSections(page: Page, quoteUrl: string): Promise<{ offering: string; afterSave: string }> {
+  if (!onQuote(page, quoteUrl)) await new QuotePage(page).open(quoteUrl);
+  return new PppSectionsPage(page).saveDefaultedSections(quoteUrl, pppSections);
+}
+
+/**
+ * A complete PPP quote built from a submission: conversion (3 fields, Save), Broker Commission (12%, Save), the SECTIONS tab with the
+ * app's defaults (Save) - all on one page - then the geocoded schedule. Becomes the model (pppModel).
  */
 export async function createPppQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
   const quote = await createPppSubmissionQuote(page);
+  await setPppBrokerCommission(page, quote.url);
+  await savePppDefaultedSections(page, quote.url);
   const sections = new PppSectionsPage(page);
-  await sections.addPppSections(quote.url, pppSections, pppCommission.brokerPercent);
   await sections.open(quote.url);
   await sections.importPppSchedule(pppScheduleFile);
   pppModel.url = quote.url;

@@ -6,6 +6,7 @@ import { QuoteDocumentsPage } from '../../../pages/advantagego/QuoteDocumentsPag
 import { QuotePage } from '../../../pages/advantagego/QuotePage';
 import { QuoteSectionsPage } from '../../../pages/advantagego/QuoteSectionsPage';
 import { PiSectionsPage } from '../PiSectionsPage';
+import { addPiBrokerCommission } from '../commission';
 import { SubmissionPage } from '../../../pages/advantagego/SubmissionPage';
 import { recordContract } from '../../../support/contracts';
 import { persisted } from '../../../support/runState';
@@ -38,24 +39,37 @@ export async function createPiQuote(page: Page): Promise<{ submissionId: number;
 }
 
 /** Quote → Sections: the Accountants risk section with its activities, income, limit and excess, saved. */
-export async function addPiSections(page: Page, quoteUrl: string): Promise<void> {
+/**
+ * The Broker Commission and the risk section, saved together in one go:
+ * 1. DETAILS → Commission → "+" → Broker Commission → Selected % = 12 (not saved yet);
+ * 2. the SECTIONS tab clicked inside the app (the 12% stays on the page) → "+" → the Accountants risk section → its risk details →
+ *    a Save the app refuses for the missing limit and excess (that is what makes the coverage entries appear; nothing is stored) →
+ *    limit and excess;
+ * 3. Save: the commission, the section, its details, limit and excess are stored together.
+ */
+export async function addPiBrokerAndSections(page: Page, quoteUrl: string): Promise<'added' | 'set' | 'kept'> {
+  const quote = new QuotePage(page);
+  await quote.open(quoteUrl);
+  const outcome = await addPiBrokerCommission(page, piCommission.brokerPercent, { save: false });
+
+  await page.getByRole('button', { name: 'Sections', exact: true }).first().click();
+  await expect(page.getByText('Risk Sections', { exact: true })).toBeVisible({ timeout: 60_000 });
   const sections = new PiSectionsPage(page);
-  await sections.open(quoteUrl);
   await sections.addRiskSection(piSections.riskSection);
   await sections.fillPiRiskDetails(piSections);
-  await sections.saveExpectingValidation(); // limit & excess missing → coverage nodes appear
+  await sections.saveExpectingValidation(); // limit & excess missing → coverage nodes appear (refused, nothing stored)
   await sections.setLimitAndExcess(piSections.limitAndExcess);
-  await sections.save();
+  await sections.save(); // stores the commission and the section together
+  return outcome;
 }
 
-/** A complete PI quote built from a submission: sections, a price, then the Broker Commission override. Becomes the model (piModel). */
+/** A complete PI quote built from a submission: Broker Commission and sections (one Save), then a price. Becomes the model (piModel). */
 export async function createPiModelQuote(page: Page): Promise<{ submissionId: number; reference: string; url: string }> {
   const quote = await createPiQuote(page);
-  await addPiSections(page, quote.url);
-  await new PiSectionsPage(page).getPrice([piSections.riskSection]);
-  const quotePage = new QuotePage(page);
-  await quotePage.open(quote.url);
-  await quotePage.addBrokerCommission(piCommission.brokerPercent); // existing Broker Commission row → its %, otherwise a row is added with +
+  await addPiBrokerAndSections(page, quote.url);
+  const sections = new PiSectionsPage(page);
+  await sections.open(quote.url);
+  await sections.getPrice([piSections.riskSection]);
   piModel.url = quote.url;
   return quote;
 }

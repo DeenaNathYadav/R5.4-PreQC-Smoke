@@ -14,6 +14,7 @@ import { createMtpModelCopy, mtpDocumentWait,
 } from '../../src/products/mtp/flows/quote';
 import { mtp } from '../../src/products/mtp';
 import { MtpSectionsPage } from '../../src/products/mtp/MtpSectionsPage';
+import { getMtpCommission } from '../../src/products/mtp/commission';
 import {
   mtpCancellation,
   mtpCommission,
@@ -130,12 +131,13 @@ test.describe(() => {
       steps.needs('Convert to Quote with PDBI, Liability, Road Risks and Legal Expenses');
       const quote = new QuotePage(page);
       await quote.open(chain.quoteUrl);
-      // The connector leaves "not rated" sections empty: they get the broker %. When Get Commission errors, the Broker Commission is
-      // added by hand ("+", or its blank % filled) so the chain carries on, and this test then fails with the connector's error.
-      const { rejected, error } = await quote.getCommissionOrAddManually(mtpCommission.brokerPercent);
-      if (rejected.length) testInfo.annotations.push({ type: 'commission not rated', description: rejected.join(', ') });
+      // Get Commission must fill every row's Standard %. If it errors or leaves one empty, 12 is put in every row's Selected % and
+      // saved first (so the chain carries on), then this test fails with the reason.
+      const { rated, notRated, failure } = await getMtpCommission(page, mtpCommission.brokerPercent);
+      if (rated.length) testInfo.annotations.push({ type: 'commission rated', description: rated.join(', ') });
+      if (notRated.length) testInfo.annotations.push({ type: 'commission not rated', description: notRated.join(', ') });
       mtpModel.url = chain.quoteUrl; // sections, schedule and commission are on it now: the model the other MTP quotes are copied from
-      if (error) throw error;
+      if (failure) throw new Error(failure);
     });
 
     test('Get Pricing', async ({ page }, testInfo) => {

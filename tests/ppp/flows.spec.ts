@@ -9,9 +9,12 @@ import { pppDocumentWait, fillCtaRationale,
   issueWithSelfApproval,
   pppModel,
   priceQuote,
+  savePppDefaultedSections,
+  setPppBrokerCommission,
 } from '../../src/products/ppp/flows/quote';
 import { ppp } from '../../src/products/ppp';
 import { PppSectionsPage } from '../../src/products/ppp/PppSectionsPage';
+import { addPppBrokerCommission, expectPppBrokerCommission } from '../../src/products/ppp/commission';
 import {
   pppCancellation,
   pppCommission,
@@ -90,8 +93,10 @@ test.describe(() => {
       chain.quoteReference = (await page.title()).match(/RSK\d+Q\d+/)![0];
     };
 
-    // New Submission (inception today − 10 days) → Convert to Quote: the quote the rest of the chain works on, and the model the other
-    // PPP quotes are copied from
+    // These three steps follow a user's own order and run on the same page (with SHARED_PAGE=1 the page carries over between tests;
+    // nothing in them reloads it unless the page is elsewhere).
+    // 1. New Submission (inception today − 10 days) → Convert to Quote: only the 3 mandatory fields → Save. The quote the rest of the
+    //    chain works on, and the model the other PPP quotes are copied from.
     test('Convert to Quote', async ({ page }, testInfo) => {
       test.setTimeout(8 * 60_000);
       test.skip(!!ppp.env('QUOTE_URL'), 'PPP_QUOTE_URL is set');
@@ -102,13 +107,25 @@ test.describe(() => {
       expect(quote.reference).toMatch(/^RSK\d+Q001$/);
     });
 
-    // Offering (the first one listed) → PPP risk section; Save lists what the covers still need
-    test('Add PPP risk section and covers', async ({ page }, testInfo) => {
+    // 2. Details → Commission → Broker Commission row (defaulted by the app; added with + only when it isn't) → Selected % = 12
+    //    (Standard % is read-only) → Save
+    test('Add Broker Commission', async ({ page }, testInfo) => {
       steps.needs('Convert to Quote');
+      test.setTimeout(5 * 60_000);
+      const outcome = await setPppBrokerCommission(page, chain.quoteUrl);
+      testInfo.annotations.push({ type: 'broker commission', description: `${outcome}, Selected % = ${pppCommission.brokerPercent}` });
+      pppModel.url = chain.quoteUrl; // with the sections and schedule that follow, the model the other PPP quotes are copied from
+    });
+
+    // 3. SECTIONS tab → wait for the offering "Standard PPP" and the PPP risk section the app defaults (the test never adds them) →
+    //    Save; then the quote is reopened: the PPP section and the Broker Commission 12% must both be saved
+    test('Add PPP risk section and covers', async ({ page }, testInfo) => {
+      steps.needs('Add Broker Commission');
       test.setTimeout(8 * 60_000);
-      const { offering, validation } = await new PppSectionsPage(page).addPppSections(chain.quoteUrl, pppSections, pppCommission.brokerPercent);
+      const { offering, afterSave } = await savePppDefaultedSections(page, chain.quoteUrl);
       testInfo.annotations.push({ type: 'offering', description: offering });
-      testInfo.annotations.push({ type: 'section validation', description: validation });
+      if (afterSave) testInfo.annotations.push({ type: 'sections save listed', description: afterSave });
+      await expectPppBrokerCommission(page, pppCommission.brokerPercent);
     });
 
     test('Insert schedule with geocoding and peril score', async ({ page }) => {
@@ -117,17 +134,6 @@ test.describe(() => {
       const sections = new PppSectionsPage(page);
       await sections.open(chain.quoteUrl);
       await sections.importPppSchedule(pppScheduleFile);
-    });
-
-    // PPP is not eligible for ⋮ → Get Commission. Broker Commission is a deduction on Details → Commission: the row defaulted on the
-    // quote (checked) gets its Override %
-    test('Add Broker Commission', async ({ page }) => {
-      steps.needs('Convert to Quote');
-      const quote = new QuotePage(page);
-      await quote.open(chain.quoteUrl);
-      await quote.addBrokerCommission(pppCommission.brokerPercent); // existing Broker Commission row → its %, otherwise a row is added with +
-      await quote.expectBrokerCommission();
-      pppModel.url = chain.quoteUrl; // sections, schedule and commission are on it now: the model the other PPP quotes are copied from
     });
 
     test('Get Pricing', async ({ page }, testInfo) => {

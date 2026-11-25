@@ -1,9 +1,13 @@
-import { Locator, Page, expect } from '@playwright/test';
+import { Locator, Page, expect, test } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
+import { autoMap, dataImportTasks } from '../../pages/advantagego/dataImport';
 import { acknowledgeWarnings, clickSave, expectToast, waitForIdle } from '../../pages/advantagego/entity';
 import { selectDropdown } from '../../pages/advantagego/kendo';
-import { QuoteSectionsPage, quoteId } from '../../pages/advantagego/QuoteSectionsPage';
+import { QuoteSectionsPage, escapeRegExp, quoteId } from '../../pages/advantagego/QuoteSectionsPage';
+
+/** Matches `text` with or without its spaces: the schedule grid stores a registration typed as "SM24 AUT" as "SM24AUT". */
+const spacesOptional = (text: string) => new RegExp(text.trim().split(/\s+/).map(escapeRegExp).join('\\s*'));
 
 /** Types `value` into a cell of the open ag-grid row; the editor occasionally doesn't open on the first double-click, so it is retried. */
 export async function setGridCell(page: Page, row: Locator, colId: string, value: string): Promise<void> {
@@ -14,7 +18,7 @@ export async function setGridCell(page: Page, row: Locator, colId: string, value
     await page.keyboard.press('Control+A');
     await page.keyboard.type(value);
     await page.keyboard.press('Enter');
-    await expect(cell).toContainText(value, { timeout: 4_000 });
+    await expect(cell).toContainText(spacesOptional(value), { timeout: 4_000 });
   }).toPass({ timeout: 30_000 });
 }
 
@@ -123,7 +127,7 @@ export class FleetSectionsPage extends QuoteSectionsPage {
 
     await popup.getByRole('button', { name: 'Next', exact: true }).click();
     await expect(popup.getByText('Define Spreadsheet Mappings', { exact: true })).toBeVisible({ timeout: 60_000 });
-    await popup.getByRole('button', { name: 'Auto Mapping', exact: true }).click();
+    await autoMap(popup, /Unique Schedule Id\s*-->/);
     // Unique Schedule Id is unmapped so the row is inserted as a new vehicle (the file's id belongs to the reference quote)
     const mapped = popup.locator('[col-id=displayName]');
     await expect(mapped.filter({ hasText: /Unique Schedule Id\s*-->/ })).toBeVisible({ timeout: 30_000 }); // Auto Mapping done
@@ -135,13 +139,8 @@ export class FleetSectionsPage extends QuoteSectionsPage {
     await popup.getByRole('button', { name: 'Submit', exact: true }).click();
     expect((await submitted).ok(), 'schedule dataImport API succeeded').toBeTruthy();
 
-    const status = (text: RegExp) => expect(popup.locator('.data-import-list').getByText(text)).toBeVisible({ timeout: 180_000 });
-    // Continue stays disabled while a background step (validation, vehicle lookup, import) is still running
-    const resume = async () => {
-      const next = popup.getByRole('button', { name: 'Continue', exact: true });
-      await expect(next).toBeEnabled({ timeout: 300_000 });
-      await next.click();
-    };
+    // The task list only moves on when refreshed (src/pages/advantagego/dataImport.ts)
+    const { status, resume } = dataImportTasks(popup);
 
     await status(/Spreadsheet mappings have been validated/);
     await resume();
@@ -149,7 +148,13 @@ export class FleetSectionsPage extends QuoteSectionsPage {
     await resume();
     await expect(popup.getByText('Vehicle Lookup Results', { exact: true })).toBeVisible({ timeout: 60_000 });
     await expect(popup.getByText(/Vehicle lookup is complete/)).toBeVisible({ timeout: 240_000 });
-    await expect(popup.getByText(/Vehicles not enriched during lookup\s*0\//)).toBeVisible();
+    // A vehicle the lookup (CDL) could not enrich is still imported, as by hand: reported, not a failure
+    const notEnriched = popup.getByText(/Vehicles not enriched during lookup\s*[1-9]\d*\//);
+    if (await notEnriched.isVisible()) {
+      const text = (await notEnriched.innerText()).replace(/\s+/g, ' ').trim();
+      test.info().annotations.push({ type: 'vehicle lookup', description: `${text} (imported anyway)` });
+      console.log(`Vehicle lookup: ${text}; the schedule is imported without the CDL details`);
+    }
     await popup.getByRole('button', { name: 'Next', exact: true }).click();
 
     await expect(popup.getByText('Confirm Import', { exact: true })).toBeVisible({ timeout: 60_000 });
@@ -181,7 +186,7 @@ export class FleetSectionsPage extends QuoteSectionsPage {
     const { page } = this;
     return page
       .locator('.ag-center-cols-container .ag-row')
-      .filter({ has: page.locator('.ag-cell[col-id="Vehicle.VehicleRegistration"]', { hasText: registration }) });
+      .filter({ has: page.locator('.ag-cell[col-id="Vehicle.VehicleRegistration"]', { hasText: spacesOptional(registration) }) });
   }
 
   /** Save writes the grid's changes ("…Saved Successfully"); a warnings banner is acknowledged. */

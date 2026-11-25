@@ -19,6 +19,7 @@ import { recordContract } from '../../../support/contracts';
 import { persisted } from '../../../support/runState';
 import { inceptionDate } from '../../../support/dates';
 import { FleetSectionsPage, setGridCell } from '../FleetSectionsPage';
+import { percentOf, runGetCommission, typeIntoCell } from '../commission';
 import {
   fleetClaims,
   fleetCommission,
@@ -371,51 +372,92 @@ export async function createBoundPolicy(page: Page): Promise<CreatedPolicy> {
 }
 
 /**
- * ⋮ → Get Commission (eligible for Fleet). The connector answers in a "Confirm Commission Updates" dialog (Accept) and, when it rates
- * the Fleet section, Details → Commissions shows its Selected % (col-id RatePercentage). The test agency is on the manual look-up
- * table, so the connector answers error 90063 and leaves the Fleet row (created by the offering) without rates: its Selected % is then
- * typed in (`fleetCommission.brokerPercent`) and saved. Returns the Selected %.
+ * ⋮ → Get Commission (eligible for Fleet). It should fill the Standard % (col-id PlanRatePercentage) of every row in Details →
+ * Commissions (the Fleet row is created by the offering). The rates it puts on the page are not saved yet, so the grid is read on the
+ * same page (no reload), then the quote is saved, and only then reloaded to check the saved values.
+ * - Standard % filled everywhere: a row with an empty Selected % (col-id RatePercentage) gets `fleetCommission.brokerPercent`.
+ * - Get Commission errored or left a Standard % empty: every row's Selected % is set to `fleetCommission.brokerPercent` and saved,
+ *   so the scenario carries on, and then this throws (failing the Get Commission test) with the reason.
+ * Returns the Fleet row's Selected %.
  */
 export async function getCommission(page: Page, quoteUrl: string): Promise<number> {
   const quote = new QuotePage(page);
-  const fleetRow = () => page.locator('.ag-row').filter({ has: page.locator('[col-id="DeductionTypeId"]', { hasText: 'Fleet' }) }).first();
-  const openCommissions = async (wait = 30_000) => {
-    await page.reload();
-    await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 60_000 });
-    await page.getByRole('button', { name: 'Commissions', exact: true }).click();
+  const percent = fleetCommission.brokerPercent;
+  const section = page.getByRole('button', { name: 'Commissions', exact: true });
+  const grid = () => section.locator('xpath=following::div[contains(@class,"ag-root-wrapper")][1]');
+  const deductionRows = () => grid().locator('.ag-center-cols-container .ag-row').filter({ has: page.locator('[col-id="DeductionTypeId"]') });
+  const fleetRow = () => deductionRows().filter({ has: page.locator('[col-id="DeductionTypeId"]', { hasText: 'Fleet' }) }).first();
+  // Details → Commissions on the page as it is (expanded when collapsed), waiting up to `wait` for the Fleet row
+  const showCommissions = async (wait = 30_000) => {
+    await expect(async () => {
+      await section.scrollIntoViewIfNeeded({ timeout: 8_000 });
+      if (!(await grid().isVisible())) await section.click();
+      await expect(grid()).toBeVisible({ timeout: 5_000 });
+    }).toPass({ timeout: 40_000, intervals: [1_000] });
     await fleetRow().waitFor({ timeout: wait }).catch(() => {});
     return fleetRow();
   };
-  const selectedOf = async (row: Locator) => Number((await row.locator('[col-id="RatePercentage"]').innerText()).replace(/,/g, '')) || 0;
+  const rowName = async (row: Locator) => (await row.locator('[col-id="DeductionTypeId"]').innerText()).trim();
+  const readRows = async () => {
+    const rows: Locator[] = [];
+    const missing: string[] = [];
+    for (let i = 0; i < (await deductionRows().count()); i++) {
+      const row = deductionRows().nth(i);
+      if (!(await rowName(row))) continue; // blank placeholder row
+      rows.push(row);
+      if ((await percentOf(row.locator('[col-id="PlanRatePercentage"]'))) <= 0) missing.push(await rowName(row));
+    }
+    return { rows, missing };
+  };
 
   // The connector takes about 15 seconds and its Fleet row sometimes is not there yet when the grid is read: ask again (up to 3 times)
-  let row = fleetRow();
+  let connector: Awaited<ReturnType<typeof runGetCommission>> = { rated: [], notRated: [] };
   for (let attempt = 1; attempt <= 3; attempt++) {
     await quote.open(quoteUrl);
-    // dialog accepted; sections it could not rate are left unchanged
-    const connectorError = await quote.getCommission().then(() => undefined, (e: Error) => e);
-    if (connectorError) {
-      // Get Commission errored: the commission goes on by hand ("+" Broker Commission, or its blank % filled) so the quote can move
-      // on, and the error fails the test afterwards
-      await quote.addCommissionManually(fleetCommission.brokerPercent);
-      throw connectorError;
-    }
-    row = await openCommissions();
-    if (await row.isVisible()) break;
+    connector = await runGetCommission(page); // dialog accepted, or closed by itself (or closed when the call errored)
+    const row = await showCommissions();
+    if (connector.error || (await row.isVisible())) break;
   }
-  await expect(row, 'the Fleet commission row').toBeVisible({ timeout: 5_000 });
-  if ((await selectedOf(row)) > 0) return selectedOf(row);
+  await expect(fleetRow(), 'the Fleet commission row').toBeVisible({ timeout: 5_000 });
 
-  await setGridCell(page, row, 'RatePercentage', fleetCommission.brokerPercent);
-  const saved = page.waitForResponse((r) => /api\/quote\/UpdateQuote/i.test(r.url()), { timeout: 60_000 });
+  // The rates land on the page a moment after the call: give every Standard % up to 30 s to show (checked each second)
+  let state = await readRows();
+  const started = Date.now();
+  while (!connector.error && state.missing.length && Date.now() - started < 30_000) {
+    await page.waitForTimeout(1_000);
+    state = await readRows();
+  }
+  const problems: string[] = [];
+  if (connector.error) problems.push(`Get Commission errored: ${connector.error.message.split('\n')[0]}`);
+  if (state.missing.length) problems.push(`Standard % not populated for: ${state.missing.join(', ')}`);
+
+  for (const row of state.rows) {
+    const selected = row.locator('[col-id="RatePercentage"]');
+    const value = await percentOf(selected);
+    if (problems.length ? value === Number(percent) : value > 0) continue;
+    expect(await typeIntoCell(page, selected, percent), `Selected % of the "${await rowName(row)}" row took ${percent}`).toBe(true);
+  }
+
+  // Save what Get Commission (and any 12%) put on the page. When the app has already saved it, the Save has nothing to send.
+  const saved = page.waitForResponse((r) => /api\/quote\/UpdateQuote/i.test(r.url()), { timeout: 30_000 }).catch(() => undefined);
   await clickSave(page);
-  expect((await saved).ok(), 'UpdateQuote succeeded').toBeTruthy();
+  const response = await saved;
+  if (response) expect(response.ok(), 'UpdateQuote succeeded').toBeTruthy();
   await acknowledgeWarnings(page);
 
-  row = await openCommissions();
-  await expect(row, 'the Fleet commission row').toBeVisible();
-  const selected = await selectedOf(row);
-  expect(selected, 'Selected % of the Fleet commission').toBeGreaterThan(0);
+  // Reload and check the saved values
+  await page.reload();
+  await expect(page.locator('button[title="More"]').first()).toBeVisible({ timeout: 60_000 });
+  await showCommissions();
+  await expect(fleetRow(), 'the Fleet commission row after saving').toBeVisible({ timeout: 5_000 });
+  const selected = await percentOf(fleetRow().locator('[col-id="RatePercentage"]'));
+  expect(selected, 'saved Selected % of the Fleet commission').toBeGreaterThan(0);
+  if (!problems.length) {
+    expect(await percentOf(fleetRow().locator('[col-id="PlanRatePercentage"]')), 'saved Standard % of the Fleet commission').toBeGreaterThan(0);
+  }
+  if (problems.length) {
+    throw new Error(`${problems.join('; ')}. ${percent}% was put in Selected % of every commission row and saved, so the scenario carries on.`);
+  }
   return selected;
 }
 
